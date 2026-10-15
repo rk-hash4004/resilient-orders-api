@@ -1,0 +1,5 @@
+# SAP Business Accelerator Hub sandbox (OData V2). The API key is NOT here: it is read from the SAP_API_KEY environment variable.
+sap:
+  host: "sandbox.api.sap.com"
+  basePath: "/s4hanacloud/sap/opu/odata/sap/API_BUSINESS_PARTNER"
+  timeoutMs: "5000"

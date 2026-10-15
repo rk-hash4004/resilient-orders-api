@@ -1,0 +1,35 @@
+name: Mule Order Experience API CI
+on:
+  push:
+    branches:
+      - main
+      - develop
+  pull_request:
+    branches:
+      - main
+      - develop
+jobs:
+  build-test-package:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Source Code
+        uses: actions/checkout@v4
+
+      - name: Set up Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: maven
+      
+      - name: Run MUnit tests
+        run: mvn clean test
+      
+      - name: Package Mule application
+        run: mvn package -DskipTests
+
+      - name: Upload Mule application artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: mule-application-artifact
+          path: target/*-mule-application.jar

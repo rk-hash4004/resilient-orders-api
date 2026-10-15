@@ -1,0 +1,375 @@
+<?xml version="1.0" encoding="UTF-8"?>
+
+<mule xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+	xmlns:munit="http://www.mulesoft.org/schema/mule/munit" xmlns:munit-tools="http://www.mulesoft.org/schema/mule/munit-tools"
+	xmlns="http://www.mulesoft.org/schema/mule/core" xmlns:doc="http://www.mulesoft.org/schema/mule/documentation"
+	xsi:schemaLocation="
+		http://www.mulesoft.org/schema/mule/core http://www.mulesoft.org/schema/mule/core/current/mule.xsd
+		http://www.mulesoft.org/schema/mule/munit http://www.mulesoft.org/schema/mule/munit/current/mule-munit.xsd
+		http://www.mulesoft.org/schema/mule/munit-tools  http://www.mulesoft.org/schema/mule/munit-tools/current/mule-munit-tools.xsd">
+	<munit:config name="order-experience-api-test-suite.xml" />
+	<munit:test name="post-orders-happy-path-test" doc:id="e30eb698-81c1-4f67-8914-406088a7171a" description="Test">
+		<munit:behavior >
+			<munit-tools:mock-when doc:name="Mock Duplicate Check Success" doc:id="9e9902e9-e8a7-4f95-ab15-23e915f3aae3" processor="flow-ref">
+				<munit-tools:with-attributes >
+					<munit-tools:with-attribute whereValue="check-duplicate-order-subflow" attributeName="name" />
+				</munit-tools:with-attributes>
+				<munit-tools:then-return >
+					<munit-tools:payload value="#[payload]" />
+				</munit-tools:then-return>
+			</munit-tools:mock-when>
+			<munit-tools:mock-when doc:name="Mock DB Transaction Success" doc:id="f791bae8-446f-44dd-9bbe-bbd3617ddaaa" processor="flow-ref">
+				<munit-tools:with-attributes >
+					<munit-tools:with-attribute whereValue="persist-order-transactionally-subflow" attributeName="name" />
+				</munit-tools:with-attributes>
+				<munit-tools:then-return >
+					<munit-tools:payload value="#[payload]" />
+				</munit-tools:then-return>
+			</munit-tools:mock-when>
+			<munit-tools:mock-when doc:name="Mock S3 Put Success" doc:id="d03d566c-a2b5-4f11-a2bc-d3cecf1c593d" processor="s3:put-object">
+				<munit-tools:with-attributes >
+					<munit-tools:with-attribute whereValue="Put Object" attributeName="doc:name" />
+				</munit-tools:with-attributes>
+				<munit-tools:then-return >
+					<munit-tools:payload value='#[{ eTag: "mock-etag-123" }]' mediaType="application/java" />
+				</munit-tools:then-return>
+			</munit-tools:mock-when>
+			<munit-tools:mock-when doc:name="Mock Object Store Success" doc:id="27c7c283-3b9a-4f67-9c80-13e289afa2c3" processor="os:store">
+				<munit-tools:with-attributes >
+					<munit-tools:with-attribute whereValue="Store" attributeName="doc:name" />
+				</munit-tools:with-attributes>
+				<munit-tools:then-return >
+					<munit-tools:payload value="#[true]" />
+				</munit-tools:then-return>
+			</munit-tools:mock-when>
+		</munit:behavior>
+		<munit:execution >
+			<munit:set-event doc:name="Set Happy Path Order Payload" doc:id="c7fc7de6-907a-4df0-ada9-579a6b8e8109" >
+				<munit:payload value='#[{&#10;  externalOrderId: "ORD-MUNIT-1001",&#10;  orderSource: "WEB",&#10;  marketplace: "US",&#10;  requestTime: "2026-04-07T10:15:30Z",&#10;  customer: {&#10;    customerId: "CUST-1001",&#10;    customerType: "REGISTERED",&#10;    email: "john@example.com",&#10;    firstName: "John",&#10;    lastName: "Doe",&#10;    phone: "+1-214-555-0101"&#10;  },&#10;  items: [&#10;    {&#10;      lineNumber: 1,&#10;      sellerId: "SELLER-100",&#10;      productId: "SKU-101",&#10;      sku: "SKU-101-BLK-9",&#10;      productName: "Running Shoes",&#10;      quantity: 2,&#10;      unitPrice: 25.5,&#10;      listPrice: 30,&#10;      itemDiscount: 4.5,&#10;      taxAmount: 3.2,&#10;      currency: "USD",&#10;      fulfillmentType: "SHIP"&#10;    }&#10;  ],&#10;  pricing: {&#10;    subtotal: 51,&#10;    itemDiscountTotal: 4.5,&#10;    shippingAmount: 4.99,&#10;    taxAmount: 3.2,&#10;    orderDiscountTotal: 2,&#10;    grandTotal: 52.69,&#10;    currency: "USD"&#10;  },&#10;  payment: {&#10;    paymentMethodType: "CARD",&#10;    paymentToken: "tok_abc123xyz",&#10;    paymentProvider: "STRIPE",&#10;    authorizedAmount: 52.69,&#10;    currency: "USD"&#10;  }&#10;}]' mediaType="application/java" />
+			</munit:set-event>
+			<flow-ref doc:name="Invoke POST Orders Flow" doc:id="e2ace01c-1aaf-4942-825e-456dcfaae514" name="post:\orders:application\json:order-experience-api-config"/>
+		</munit:execution>
+		<munit:validation >
+			<munit-tools:assert-that doc:name="Assert Success Status" doc:id="4fd860a7-df85-4f2e-ade4-27d5fc50d6dc" is='#[MunitTools::equalTo("SUCCESS")]' expression="#[payload.status]"/>
+			<munit-tools:assert-that doc:name="Assert Order Id" doc:id="b65459ec-61ee-4dba-a5b5-4cf659d1a646" expression="#[payload.orderId]" is='#[MunitTools::equalTo("ORD-MUNIT-1001")]'/>
+			<munit-tools:assert-that doc:name="Assert Correlation Id" doc:id="745d52ef-a527-4e1e-b6b0-a6801389a5c2" expression="#[payload.correlationId]" is='#[MunitTools::notNullValue()]'/>
+			<munit-tools:assert-that doc:name="Assert S3 Key Contains Order Id" doc:id="b11e0530-88e4-49b5-97c3-9239115392a3" expression="#[payload.data.key]" is='#[MunitTools::containsString("ORD-MUNIT-1001")]'/>
+			<munit-tools:assert-that doc:name="Assert Order Created Code" doc:id="b88df35b-c7e7-4ddc-bea4-de430de9e68b" is='#[MunitTools::equalTo("ORDER_CREATED")]' expression="#[payload.code]"/>
+			<munit-tools:verify-call doc:name="Verify Duplicate Check Called Once" doc:id="8cb8742d-2119-4620-a0af-3c1ba94e7a81" processor="flow-ref" times="1">
+				<munit-tools:with-attributes >
+					<munit-tools:with-attribute whereValue="check-duplicate-order-subflow" attributeName="name" />
+				</munit-tools:with-attributes>
+			</munit-tools:verify-call>
+			<munit-tools:verify-call doc:name="Verify DB Transaction Called Once" doc:id="d55bada7-55a3-4112-9165-4f1215696d09" processor="flow-ref" times="1">
+				<munit-tools:with-attributes >
+					<munit-tools:with-attribute whereValue="Persist Order Transactionally" attributeName="doc:name" />
+				</munit-tools:with-attributes>
+			</munit-tools:verify-call>
+			<munit-tools:verify-call doc:name="Verify S3 Put Called Once" doc:id="9a1250cf-9623-4c7e-a492-2b31c027efc7" processor="s3:put-object" times="1">
+				<munit-tools:with-attributes >
+					<munit-tools:with-attribute whereValue="Put Object" attributeName="doc:name" />
+				</munit-tools:with-attributes>
+			</munit-tools:verify-call>
+			<munit-tools:verify-call doc:name="Verify Object Store Called Once" doc:id="de9338ed-4aa2-4c02-bbc3-af6ff8215549" processor="os:store" times="1">
+				<munit-tools:with-attributes >
+					<munit-tools:with-attribute whereValue="Store" attributeName="doc:name" />
+				</munit-tools:with-attributes>
+			</munit-tools:verify-call>
+		</munit:validation>
+	</munit:test>
+	<munit:test name="post-orders-pricing-validation-400-test" doc:id="ca25d8a9-9c75-4d77-814f-3e715bbbcb07">
+		<munit:execution >
+			<munit:set-event doc:name="Set Pricing Mismatch Payload" doc:id="c1319b20-6316-46ff-b0a5-9c39cf338977">
+				<munit:payload value='#["pricing": {&#10;  "subtotal": 100,&#10;  "itemDiscountTotal": 10,&#10;  "orderDiscountTotal": 5,&#10;  "shippingAmount": 8,&#10;  "taxAmount": 7,&#10;  "grandTotal": 999&#10;}]' mediaType="application/java" />
+			</munit:set-event>
+			<flow-ref doc:name="Invoke POST Orders Flow" doc:id="55a19708-1f82-4fbf-a8c8-bd164d78dcba" name="post:\orders:application\json:order-experience-api-config" />
+		</munit:execution>
+		<munit:validation >
+			<munit-tools:assert-that doc:name="Assert Failed Status" doc:id="dd1dc4e5-2b8e-4df9-8379-2c03ff311ca0" is='#[MunitTools::equalTo("FAILED")]' expression="#[payload.status]" />
+			<munit-tools:assert-that doc:name="Assert Pricing Validation Code" doc:id="ce958757-eec7-4dd9-96ce-526ff14974af" is='#[MunitTools::equalTo("PRICING_VALIDATION_FAILED")]' expression="#[payload.code]" />
+			<munit-tools:assert-that doc:name="Assert HTTP Status 400" doc:id="4a1c0fd2-f2e0-4dd5-acbb-cff1fd564019" expression="#[vars.httpStatus]" is="#[MunitTools::equalTo(400)]" />
+			<munit-tools:verify-call doc:name="Verify Duplicate Check Not Called" doc:id="fefd89f8-8ebb-496a-9660-a1c670f5262f" processor="flow-ref" times="0" >
+				<munit-tools:with-attributes >
+					<munit-tools:with-attribute whereValue="check-duplicate-order-subflow" attributeName="name" />
+				</munit-tools:with-attributes>
+			</munit-tools:verify-call>
+			<munit-tools:verify-call doc:name="Verify DB Transaction Not Called" doc:id="40c27376-04c4-4f57-b4a2-982cf07e78c1" processor="flow-ref" times="0" >
+				<munit-tools:with-attributes >
+					<munit-tools:with-attribute whereValue="Persist Order Transactionally" attributeName="doc:name" />
+				</munit-tools:with-attributes>
+			</munit-tools:verify-call>
+			<munit-tools:verify-call doc:name="Verify S3 Put Not Called" doc:id="5b9346fd-aeb3-4a49-bc50-3757d9a3af35" processor="s3:put-object" times="0" >
+				<munit-tools:with-attributes >
+					<munit-tools:with-attribute whereValue="Put Object" attributeName="doc:name" />
+				</munit-tools:with-attributes>
+			</munit-tools:verify-call>
+			<munit-tools:verify-call doc:name="Verify Object Store Not Called" doc:id="80d5541a-5892-4f90-bb88-5784caf3dfc1" processor="os:store" times="0" >
+				<munit-tools:with-attributes >
+					<munit-tools:with-attribute whereValue="Store" attributeName="doc:name" />
+				</munit-tools:with-attributes>
+			</munit-tools:verify-call>
+		</munit:validation>
+	</munit:test>
+	<munit:test name="post-orders-payment-validation-422-test" doc:id="e8c7dedf-82ad-41e1-a179-9f883462a6c7">
+		<munit:execution >
+			<munit:set-event doc:name="Set Invalid Payment Payload" doc:id="0e1f61cc-7da4-46e0-afa6-06519fcb016c" >
+				<munit:payload value='#[{&#10;  "externalOrderId": "ORD-MUNIT-PAYMENT-422",&#10;  "orderSource": "WEB",&#10;  "marketplace": "US",&#10;  "requestTime": "2026-04-07T10:15:30Z",&#10;  "customer": {&#10;    "customerId": "CUST-1001",&#10;    "customerType": "REGISTERED",&#10;    "email": "john@example.com",&#10;    "firstName": "John",&#10;    "lastName": "Doe",&#10;    "phone": "+1-214-555-0101"&#10;  },&#10;  "items": [&#10;    {&#10;      "lineNumber": 1,&#10;      "sku": "SKU-1001",&#10;      "productName": "Wireless Mouse",&#10;      "quantity": 1,&#10;      "unitPrice": 100,&#10;      "itemDiscount": 0,&#10;      "taxAmount": 7,&#10;      "lineTotal": 100&#10;    }&#10;  ],&#10;  "pricing": {&#10;    "subtotal": 100,&#10;    "itemDiscountTotal": 10,&#10;    "orderDiscountTotal": 5,&#10;    "shippingAmount": 8,&#10;    "taxAmount": 7,&#10;    "grandTotal": 100,&#10;    "currency": "USD"&#10;  },&#10;  "delivery": {&#10;    "deliveryMethod": "STANDARD",&#10;    "requestedDeliveryDate": "2026-04-10",&#10;    "shippingAddress": {&#10;      "addressLine1": "123 Main Street",&#10;      "addressLine2": "Apt 101",&#10;      "city": "Dallas",&#10;      "state": "TX",&#10;      "postalCode": "75001",&#10;      "country": "US"&#10;    }&#10;  },&#10;  "payment": {&#10;    "paymentMethodType": "CARD",&#10;    "paymentToken": "",&#10;    "authorizedAmount": 100,&#10;    "currency": "USD"&#10;  }&#10;}]' mediaType="application/java" />
+			</munit:set-event>
+			<flow-ref doc:name="Invoke POST Orders Flow" doc:id="fbeb1371-b415-45f6-9318-6326b5414423" name="post:\orders:application\json:order-experience-api-config" />
+		</munit:execution>
+		<munit:validation >
+			<munit-tools:assert-that doc:name="Assert Failed Status" doc:id="0d5e10c8-ea06-4d15-aee3-d093ba7b76ce" expression="#[payload.status]" is='#[MunitTools::equalTo("FAILED")]' />
+			<munit-tools:assert-that doc:name="Assert Payment Validation Code" doc:id="9f631d1a-238d-4030-ac20-3a5bdfebfb8c" expression="#[payload.code]" is='#[MunitTools::equalTo("PAYMENT_VALIDATION_FAILED")]' />
+			<munit-tools:assert-that doc:name="Assert HTTP Status 422" doc:id="82d78aef-6da8-4161-bed7-852f735cc64d" expression="#[vars.httpStatus]" is="#[MunitTools::equalTo(422)]" />
+			<munit-tools:verify-call doc:name="Verify Duplicate Check Not Called" doc:id="9f66de5a-a42e-4b71-80d8-7de9800bc5ee" processor="flow-ref" times="0" >
+				<munit-tools:with-attributes >
+					<munit-tools:with-attribute whereValue="check-duplicate-order-subflow" attributeName="name" />
+				</munit-tools:with-attributes>
+			</munit-tools:verify-call>
+			<munit-tools:verify-call doc:name="Verify DB Transaction Not Called" doc:id="763cd641-502f-4b4d-a829-40e1e15c0f61" processor="flow-ref" times="0" >
+				<munit-tools:with-attributes >
+					<munit-tools:with-attribute whereValue="Persist Order Transactionally" attributeName="doc:name" />
+				</munit-tools:with-attributes>
+			</munit-tools:verify-call>
+			<munit-tools:verify-call doc:name="Verify S3 Put Not Called" doc:id="8b971467-c50c-424e-a732-f252036a2c45" processor="s3:put-object" times="0" >
+				<munit-tools:with-attributes >
+					<munit-tools:with-attribute whereValue="Put Object" attributeName="doc:name" />
+				</munit-tools:with-attributes>
+			</munit-tools:verify-call>
+			<munit-tools:verify-call doc:name="Verify Object Store Not Called" doc:id="624a87dd-b332-48bd-b7cd-99771929a378" processor="os:store" times="0" >
+				<munit-tools:with-attributes >
+					<munit-tools:with-attribute whereValue="Store" attributeName="doc:name" />
+				</munit-tools:with-attributes>
+			</munit-tools:verify-call>
+		</munit:validation>
+	</munit:test>
+	<munit:test name="post-orders-duplicate-409-test" doc:id="d6bee1b0-8914-45a6-a479-8e1fc35d3fc6">
+		<munit:behavior >
+			<munit-tools:mock-when doc:name="Mock Duplicate Order Exists" doc:id="136b5857-7639-4723-9d00-69b83ee17967" processor="os:contains">
+				<munit-tools:with-attributes >
+					<munit-tools:with-attribute whereValue="Check Order Exists" attributeName="doc:name" />
+				</munit-tools:with-attributes>
+				<munit-tools:then-return >
+					<munit-tools:variables >
+						<munit-tools:variable key="isDuplicateOrder" value="#[true]" />
+					</munit-tools:variables>
+				</munit-tools:then-return>
+			</munit-tools:mock-when>
+		</munit:behavior>
+		<munit:execution >
+			<munit:set-event doc:name="Set Duplicate Order Payload" doc:id="e49fc1cd-9b4c-47e0-ad9b-794d419c8548" >
+				<munit:payload value='#[{&#10;  "externalOrderId": "ORD-TEST-1007",&#10;  "orderSource": "WEB",&#10;  "marketplace": "US",&#10;  "requestTime": "2026-04-07T10:15:30Z",&#10;  "customer": {&#10;    "customerId": "CUST-1001",&#10;    "customerType": "REGISTERED",&#10;    "email": "john@example.com",&#10;    "firstName": "John",&#10;    "lastName": "Doe",&#10;    "phone": "+1-214-555-0101"&#10;  },&#10;  "items": [&#10;    {&#10;      "lineNumber": 1,&#10;      "sellerId": "SELLER-100",&#10;      "productId": "SKU-101",&#10;      "sku": "SKU-101-BLK-9",&#10;      "productName": "Running Shoes",&#10;      "quantity": 2,&#10;      "unitPrice": 25.5,&#10;      "listPrice": 30,&#10;      "itemDiscount": 4.5,&#10;      "taxAmount": 3.2,&#10;      "currency": "USD",&#10;      "fulfillmentType": "SHIP"&#10;    }&#10;  ],&#10;  "pricing": {&#10;    "subtotal": 51,&#10;    "itemDiscountTotal": 4.5,&#10;    "shippingAmount": 4.99,&#10;    "taxAmount": 3.2,&#10;    "orderDiscountTotal": 2,&#10;    "grandTotal": 52.69,&#10;    "currency": "USD"&#10;  },&#10;  "shippingAddress": {&#10;    "name": "John Doe",&#10;    "addressLine1": "120 Main St",&#10;    "addressLine2": "Apt 4B",&#10;    "city": "Dallas",&#10;    "state": "TX",&#10;    "postalCode": "75001",&#10;    "country": "US"&#10;  },&#10;  "billingAddress": {&#10;    "name": "John Doe",&#10;    "addressLine1": "120 Main St",&#10;    "addressLine2": "Apt 4B",&#10;    "city": "Dallas",&#10;    "state": "TX",&#10;    "postalCode": "75001",&#10;    "country": "US"&#10;  },&#10;  "delivery": {&#10;    "deliveryOption": "STANDARD",&#10;    "deliveryInstructions": "Leave at front door"&#10;  },&#10;  "payment": {&#10;    "paymentMethodType": "CARD",&#10;    "paymentToken": "tok_abc123xyz",&#10;    "paymentProvider": "STRIPE",&#10;    "authorizedAmount": 52.69,&#10;    "currency": "USD"&#10;  },&#10;  "promotions": [&#10;    {&#10;      "code": "SPRING10",&#10;      "type": "ORDER",&#10;      "amount": 2&#10;    }&#10;  ],&#10;  "orderAttributes": {&#10;    "gift": false,&#10;    "customerNotes": "Call if needed"&#10;  }&#10;}]' mediaType="application/java" />
+			</munit:set-event>
+			<flow-ref doc:name="Invoke POST Orders Flow" doc:id="f28211cd-e11c-4aed-ac1a-8027a61ff3f0" name="post:\orders:application\json:order-experience-api-config" />
+		</munit:execution>
+		<munit:validation >
+			<munit-tools:assert-that doc:name="Assert Failed Status" doc:id="92bc4040-c830-4589-8c0e-8027e1210618" expression="#[payload.status]" is='#[MunitTools::equalTo("FAILED")]' />
+			<munit-tools:assert-that doc:name="Assert Duplicate Order Code" doc:id="81b5fa30-25dd-4dbe-bcb7-b560055cfaee" expression="#[payload.code]" is='#[MunitTools::equalTo("DUPLICATE_ORDER")]' />
+			<munit-tools:assert-that doc:name="Assert HTTP Status 409" doc:id="b1cf1c3f-d482-4619-bda7-a74674d688ca" expression="#[vars.httpStatus]" is="#[MunitTools::equalTo(409)]" />
+			<munit-tools:verify-call doc:name="Verify Duplicate Check Called Once" doc:id="59b028e5-a883-418f-91a2-95856c43c7aa" processor="flow-ref" times="1" >
+				<munit-tools:with-attributes >
+					<munit-tools:with-attribute whereValue="check-duplicate-order-subflow" attributeName="name" />
+				</munit-tools:with-attributes>
+			</munit-tools:verify-call>
+			<munit-tools:verify-call doc:name="Verify DB Transaction Not Called" doc:id="9e836ecb-e839-4c7c-adb7-0c36c7ed9777" processor="flow-ref" times="0" >
+				<munit-tools:with-attributes >
+					<munit-tools:with-attribute whereValue="Persist Order Transactionally" attributeName="doc:name" />
+				</munit-tools:with-attributes>
+			</munit-tools:verify-call>
+			<munit-tools:verify-call doc:name="Verify S3 Put Not Called" doc:id="9055924a-b647-4abc-b2cd-2cd7053b220a" processor="s3:put-object" times="0" >
+				<munit-tools:with-attributes >
+					<munit-tools:with-attribute whereValue="Put Object" attributeName="doc:name" />
+				</munit-tools:with-attributes>
+			</munit-tools:verify-call>
+			<munit-tools:verify-call doc:name="Verify Object Store Not Called" doc:id="da46f291-a690-4e50-85dc-41e92e27425a" processor="os:store" times="0" >
+				<munit-tools:with-attributes >
+					<munit-tools:with-attribute whereValue="Store" attributeName="doc:name" />
+				</munit-tools:with-attributes>
+			</munit-tools:verify-call>
+		</munit:validation>
+	</munit:test>
+	<munit:test name="post-orders-db-failure-500-test" doc:id="9b59ab56-2bc9-473a-ad8b-20792bfc298c">
+		<munit:behavior >
+			<munit-tools:mock-when doc:name="Mock Duplicate Check Not Found" doc:id="cd63b3e4-9e52-42ce-9e1c-e415537c92d7" processor="os:contains" >
+				<munit-tools:with-attributes >
+					<munit-tools:with-attribute whereValue="Check Order Exists" attributeName="doc:name" />
+				</munit-tools:with-attributes>
+				<munit-tools:then-return >
+					<munit-tools:variables >
+						<munit-tools:variable key="isDuplicateOrder" value="#[false]" />
+					</munit-tools:variables>
+				</munit-tools:then-return>
+			</munit-tools:mock-when>
+			<munit-tools:mock-when doc:name="Mock DB Insert Connectivity Error" doc:id="ba73bf59-abd7-42f6-8025-01840017d3be" processor="db:insert">
+				<munit-tools:with-attributes >
+					<munit-tools:with-attribute whereValue="Insert Order" attributeName="doc:name" />
+				</munit-tools:with-attributes>
+				<munit-tools:then-return >
+					<munit-tools:error typeId="DB:CONNECTIVITY" />
+				</munit-tools:then-return>
+			</munit-tools:mock-when>
+		</munit:behavior>
+		<munit:execution >
+			<munit:set-event doc:name="Set Valid Order Payload for DB Failure" doc:id="06c6bcf3-558d-4919-8a45-50ec5cf407ff" >
+				<munit:payload value='#[{&#10;  "externalOrderId": "ORD-TEST-1007",&#10;  "orderSource": "WEB",&#10;  "marketplace": "US",&#10;  "requestTime": "2026-04-07T10:15:30Z",&#10;  "customer": {&#10;    "customerId": "CUST-1001",&#10;    "customerType": "REGISTERED",&#10;    "email": "john@example.com",&#10;    "firstName": "John",&#10;    "lastName": "Doe",&#10;    "phone": "+1-214-555-0101"&#10;  },&#10;  "items": [&#10;    {&#10;      "lineNumber": 1,&#10;      "sellerId": "SELLER-100",&#10;      "productId": "SKU-101",&#10;      "sku": "SKU-101-BLK-9",&#10;      "productName": "Running Shoes",&#10;      "quantity": 2,&#10;      "unitPrice": 25.5,&#10;      "listPrice": 30,&#10;      "itemDiscount": 4.5,&#10;      "taxAmount": 3.2,&#10;      "currency": "USD",&#10;      "fulfillmentType": "SHIP"&#10;    }&#10;  ],&#10;  "pricing": {&#10;    "subtotal": 51,&#10;    "itemDiscountTotal": 4.5,&#10;    "shippingAmount": 4.99,&#10;    "taxAmount": 3.2,&#10;    "orderDiscountTotal": 2,&#10;    "grandTotal": 52.69,&#10;    "currency": "USD"&#10;  },&#10;  "shippingAddress": {&#10;    "name": "John Doe",&#10;    "addressLine1": "120 Main St",&#10;    "addressLine2": "Apt 4B",&#10;    "city": "Dallas",&#10;    "state": "TX",&#10;    "postalCode": "75001",&#10;    "country": "US"&#10;  },&#10;  "billingAddress": {&#10;    "name": "John Doe",&#10;    "addressLine1": "120 Main St",&#10;    "addressLine2": "Apt 4B",&#10;    "city": "Dallas",&#10;    "state": "TX",&#10;    "postalCode": "75001",&#10;    "country": "US"&#10;  },&#10;  "delivery": {&#10;    "deliveryOption": "STANDARD",&#10;    "deliveryInstructions": "Leave at front door"&#10;  },&#10;  "payment": {&#10;    "paymentMethodType": "CARD",&#10;    "paymentToken": "tok_abc123xyz",&#10;    "paymentProvider": "STRIPE",&#10;    "authorizedAmount": 52.69,&#10;    "currency": "USD"&#10;  },&#10;  "promotions": [&#10;    {&#10;      "code": "SPRING10",&#10;      "type": "ORDER",&#10;      "amount": 2&#10;    }&#10;  ],&#10;  "orderAttributes": {&#10;    "gift": false,&#10;    "customerNotes": "Call if needed"&#10;  }&#10;}]' mediaType="application/java" />
+			</munit:set-event>
+			<flow-ref doc:name="Invoke POST Orders Flow" doc:id="407fa8c9-7476-4b31-a6c7-96f698164163" name="post:\orders:application\json:order-experience-api-config" />
+		</munit:execution>
+		<munit:validation >
+			<munit-tools:assert-that doc:name="Assert Failed Status" doc:id="757a9a59-07e3-40cd-935b-d27e6fd743c9" expression="#[payload.status]" is='#[MunitTools::equalTo("FAILED")]' />
+			<munit-tools:assert-that doc:name="Assert System Error Code" doc:id="09ed3de4-3235-40b6-b096-e9ba34861f86" expression="#[payload.code]" is='#[MunitTools::equalTo("SYSTEM_ERROR")]' />
+			<munit-tools:assert-that doc:name="Assert HTTP Status 500" doc:id="b22a8fa0-7e06-4e09-b801-e972d2c04e20" expression="#[vars.httpStatus]" is="#[MunitTools::equalTo(500)]" />
+			<munit-tools:verify-call doc:name="Verify Duplicate Check Called Once" doc:id="a3f9b39f-616b-4f61-a978-f5ce0f128f38" processor="flow-ref" times="1" >
+				<munit-tools:with-attributes >
+					<munit-tools:with-attribute whereValue="check-duplicate-order-subflow" attributeName="name" />
+				</munit-tools:with-attributes>
+			</munit-tools:verify-call>
+			<munit-tools:verify-call doc:name="Verify DB Transaction Called Once" doc:id="b98684d9-de8f-4043-9407-f9f5e9eaf023" processor="flow-ref" times="1" >
+				<munit-tools:with-attributes >
+					<munit-tools:with-attribute whereValue="Persist Order Transactionally" attributeName="doc:name" />
+				</munit-tools:with-attributes>
+			</munit-tools:verify-call>
+			<munit-tools:verify-call doc:name="Verify S3 Put Not Called" doc:id="a3cfd0dd-9c3f-4fd7-8f3b-a30cae82cd02" processor="s3:put-object" times="0" >
+				<munit-tools:with-attributes >
+					<munit-tools:with-attribute whereValue="Put Object" attributeName="doc:name" />
+				</munit-tools:with-attributes>
+			</munit-tools:verify-call>
+			<munit-tools:verify-call doc:name="Verify Object Store Not Called" doc:id="3ad740a6-b56a-47ed-8698-e2f6cf6e8a80" processor="os:store" times="0" >
+				<munit-tools:with-attributes >
+					<munit-tools:with-attribute whereValue="Store" attributeName="doc:name" />
+				</munit-tools:with-attributes>
+			</munit-tools:verify-call>
+		</munit:validation>
+	</munit:test>
+	<munit:test name="post-orders-s3-failure-502-test" doc:id="6646bc21-75cf-414a-9ce1-9a94f31f41f6">
+		<munit:behavior >
+			<munit-tools:mock-when doc:name="Mock Duplicate Check Not Found" doc:id="13f159f5-dbb7-48e0-ba9c-377247691fa4" processor="os:contains" >
+				<munit-tools:with-attributes >
+					<munit-tools:with-attribute whereValue="Check Order Exists" attributeName="doc:name" />
+				</munit-tools:with-attributes>
+				<munit-tools:then-return >
+					<munit-tools:variables >
+						<munit-tools:variable key="isDuplicateOrder" value="#[false]" />
+					</munit-tools:variables>
+				</munit-tools:then-return>
+			</munit-tools:mock-when>
+			<munit-tools:mock-when doc:name="Mock DB Transaction Success" doc:id="fe4e9888-ee10-4711-9a61-80fb853b3978" processor="flow-ref" >
+				<munit-tools:with-attributes >
+					<munit-tools:with-attribute whereValue="Persist Order Transactionally" attributeName="doc:name" />
+				</munit-tools:with-attributes>
+				<munit-tools:then-return >
+					<munit-tools:payload value="#[payload]" />
+				</munit-tools:then-return>
+			</munit-tools:mock-when>
+			<munit-tools:mock-when doc:name="Mock S3 Put Connectivity Error" doc:id="539292b4-9d3b-4992-a0fe-bb9740baa6ec" processor="s3:put-object">
+				<munit-tools:with-attributes >
+					<munit-tools:with-attribute whereValue="Put Object" attributeName="doc:name" />
+				</munit-tools:with-attributes>
+				<munit-tools:then-return >
+					<munit-tools:error typeId="S3:CONNECTIVITY" />
+				</munit-tools:then-return>
+			</munit-tools:mock-when>
+		</munit:behavior>
+		<munit:execution >
+			<munit:set-event doc:name="Set Valid Order Payload for S3 Failure" doc:id="ecfca2eb-ca96-4d54-8021-01bd5bbe6e57" >
+				<munit:payload value='#[{&#10;  "externalOrderId": "ORD-TEST-1007",&#10;  "orderSource": "WEB",&#10;  "marketplace": "US",&#10;  "requestTime": "2026-04-07T10:15:30Z",&#10;  "customer": {&#10;    "customerId": "CUST-1001",&#10;    "customerType": "REGISTERED",&#10;    "email": "john@example.com",&#10;    "firstName": "John",&#10;    "lastName": "Doe",&#10;    "phone": "+1-214-555-0101"&#10;  },&#10;  "items": [&#10;    {&#10;      "lineNumber": 1,&#10;      "sellerId": "SELLER-100",&#10;      "productId": "SKU-101",&#10;      "sku": "SKU-101-BLK-9",&#10;      "productName": "Running Shoes",&#10;      "quantity": 2,&#10;      "unitPrice": 25.5,&#10;      "listPrice": 30,&#10;      "itemDiscount": 4.5,&#10;      "taxAmount": 3.2,&#10;      "currency": "USD",&#10;      "fulfillmentType": "SHIP"&#10;    }&#10;  ],&#10;  "pricing": {&#10;    "subtotal": 51,&#10;    "itemDiscountTotal": 4.5,&#10;    "shippingAmount": 4.99,&#10;    "taxAmount": 3.2,&#10;    "orderDiscountTotal": 2,&#10;    "grandTotal": 52.69,&#10;    "currency": "USD"&#10;  },&#10;  "shippingAddress": {&#10;    "name": "John Doe",&#10;    "addressLine1": "120 Main St",&#10;    "addressLine2": "Apt 4B",&#10;    "city": "Dallas",&#10;    "state": "TX",&#10;    "postalCode": "75001",&#10;    "country": "US"&#10;  },&#10;  "billingAddress": {&#10;    "name": "John Doe",&#10;    "addressLine1": "120 Main St",&#10;    "addressLine2": "Apt 4B",&#10;    "city": "Dallas",&#10;    "state": "TX",&#10;    "postalCode": "75001",&#10;    "country": "US"&#10;  },&#10;  "delivery": {&#10;    "deliveryOption": "STANDARD",&#10;    "deliveryInstructions": "Leave at front door"&#10;  },&#10;  "payment": {&#10;    "paymentMethodType": "CARD",&#10;    "paymentToken": "tok_abc123xyz",&#10;    "paymentProvider": "STRIPE",&#10;    "authorizedAmount": 52.69,&#10;    "currency": "USD"&#10;  },&#10;  "promotions": [&#10;    {&#10;      "code": "SPRING10",&#10;      "type": "ORDER",&#10;      "amount": 2&#10;    }&#10;  ],&#10;  "orderAttributes": {&#10;    "gift": false,&#10;    "customerNotes": "Call if needed"&#10;  }&#10;}]' mediaType="application/java" />
+			</munit:set-event>
+			<flow-ref doc:name="Invoke POST Orders Flow" doc:id="2d795555-5cc6-4e02-ba3a-9fb04ffcdc7c" name="post:\orders:application\json:order-experience-api-config" />
+		</munit:execution>
+		<munit:validation >
+			<munit-tools:assert-that doc:name="Assert Failed Status" doc:id="adf49466-20e5-4565-b7e4-53c37776fc33" expression="#[payload.status]" is='#[MunitTools::equalTo("FAILED")]' />
+			<munit-tools:assert-that doc:name="Assert S3 Write Failed Code" doc:id="dcd98831-b9bc-4f84-93c5-201ef2649f92" expression="#[payload.code]" is='#[MunitTools::equalTo("S3_WRITE_FAILED")]' />
+			<munit-tools:assert-that doc:name="Assert HTTP Status 502" doc:id="4219d27c-8610-469a-b6b1-18935d9d6bc4" expression="#[vars.httpStatus]" is="#[MunitTools::equalTo(502)]" />
+			<munit-tools:verify-call doc:name="Verify Duplicate Check Called Once" doc:id="073f8ca1-dabf-48f8-a1e2-f5dca13a3fc7" processor="flow-ref" times="1">
+				<munit-tools:with-attributes >
+					<munit-tools:with-attribute whereValue="check-duplicate-order-subflow" attributeName="name" />
+				</munit-tools:with-attributes>
+			</munit-tools:verify-call>
+			<munit-tools:verify-call doc:name="Verify DB Transaction Called Once" doc:id="4984fdaf-e9f6-4a00-8587-2ef511783f7c" processor="flow-ref" times="1">
+				<munit-tools:with-attributes >
+					<munit-tools:with-attribute whereValue="Persist Order Transactionally" attributeName="doc:name" />
+				</munit-tools:with-attributes>
+			</munit-tools:verify-call>
+			<munit-tools:verify-call doc:name="Verify S3 Put Called Once" doc:id="49f2ce4b-edbd-41ba-8bab-2f76dd4713e5" processor="s3:put-object" times="1">
+				<munit-tools:with-attributes >
+					<munit-tools:with-attribute whereValue="Put Object" attributeName="doc:name" />
+				</munit-tools:with-attributes>
+			</munit-tools:verify-call>
+			<munit-tools:verify-call doc:name="Verify Object Store Not Called" doc:id="1e7972ed-71eb-4b32-98b6-d53b3a5ffd34" processor="os:store" times="0">
+				<munit-tools:with-attributes >
+					<munit-tools:with-attribute whereValue="Store" attributeName="doc:name" />
+				</munit-tools:with-attributes>
+			</munit-tools:verify-call>
+		</munit:validation>
+	</munit:test>
+	<munit:test name="post-orders-os-store-failure-500-test" doc:id="d52c4b42-73f2-4966-9c56-be9b8c6a1d64">
+		<munit:behavior >
+			<munit-tools:mock-when doc:name="Mock Duplicate Check Not Found" doc:id="d6d10ae9-7ebb-4189-9652-e4875fa422ba" processor="os:contains" >
+				<munit-tools:with-attributes >
+					<munit-tools:with-attribute whereValue="Check Order Exists" attributeName="doc:name" />
+				</munit-tools:with-attributes>
+				<munit-tools:then-return >
+					<munit-tools:variables >
+						<munit-tools:variable key="isDuplicateOrder" value="#[false]" />
+					</munit-tools:variables>
+				</munit-tools:then-return>
+			</munit-tools:mock-when>
+			<munit-tools:mock-when doc:name="Mock DB Transaction Success" doc:id="045519f0-e678-43c1-947b-2851b4ea6072" processor="flow-ref" >
+				<munit-tools:with-attributes >
+					<munit-tools:with-attribute whereValue="Persist Order Transactionally" attributeName="doc:name" />
+				</munit-tools:with-attributes>
+				<munit-tools:then-return >
+					<munit-tools:payload value="#[payload]" />
+				</munit-tools:then-return>
+			</munit-tools:mock-when>
+			<munit-tools:mock-when doc:name="Mock S3 Put Success" doc:id="d3248943-ad7d-469e-a0f9-5626703edcc3" processor="s3:put-object" >
+				<munit-tools:with-attributes >
+					<munit-tools:with-attribute whereValue="Put Object" attributeName="doc:name" />
+				</munit-tools:with-attributes>
+				<munit-tools:then-return >
+					<munit-tools:payload value="#[payload]" />
+				</munit-tools:then-return>
+			</munit-tools:mock-when>
+			<munit-tools:mock-when doc:name="Mock Object Store Failure" doc:id="a4830621-52ba-40bc-8173-b0e2dbcf4b95" processor="os:store">
+				<munit-tools:with-attributes >
+					<munit-tools:with-attribute whereValue="Store" attributeName="doc:name" />
+				</munit-tools:with-attributes>
+				<munit-tools:then-return >
+					<munit-tools:error typeId="OS:STORE_NOT_AVAILABLE" />
+				</munit-tools:then-return>
+			</munit-tools:mock-when>
+		</munit:behavior>
+		<munit:execution >
+			<munit:set-event doc:name="Set Valid Order Payload for Object Store Failure" doc:id="9562be0c-9cb1-4c21-9a04-f1f646230f48" >
+				<munit:payload value='#[{&#10;  "externalOrderId": "ORD-TEST-1007",&#10;  "orderSource": "WEB",&#10;  "marketplace": "US",&#10;  "requestTime": "2026-04-07T10:15:30Z",&#10;  "customer": {&#10;    "customerId": "CUST-1001",&#10;    "customerType": "REGISTERED",&#10;    "email": "john@example.com",&#10;    "firstName": "John",&#10;    "lastName": "Doe",&#10;    "phone": "+1-214-555-0101"&#10;  },&#10;  "items": [&#10;    {&#10;      "lineNumber": 1,&#10;      "sellerId": "SELLER-100",&#10;      "productId": "SKU-101",&#10;      "sku": "SKU-101-BLK-9",&#10;      "productName": "Running Shoes",&#10;      "quantity": 2,&#10;      "unitPrice": 25.5,&#10;      "listPrice": 30,&#10;      "itemDiscount": 4.5,&#10;      "taxAmount": 3.2,&#10;      "currency": "USD",&#10;      "fulfillmentType": "SHIP"&#10;    }&#10;  ],&#10;  "pricing": {&#10;    "subtotal": 51,&#10;    "itemDiscountTotal": 4.5,&#10;    "shippingAmount": 4.99,&#10;    "taxAmount": 3.2,&#10;    "orderDiscountTotal": 2,&#10;    "grandTotal": 52.69,&#10;    "currency": "USD"&#10;  },&#10;  "shippingAddress": {&#10;    "name": "John Doe",&#10;    "addressLine1": "120 Main St",&#10;    "addressLine2": "Apt 4B",&#10;    "city": "Dallas",&#10;    "state": "TX",&#10;    "postalCode": "75001",&#10;    "country": "US"&#10;  },&#10;  "billingAddress": {&#10;    "name": "John Doe",&#10;    "addressLine1": "120 Main St",&#10;    "addressLine2": "Apt 4B",&#10;    "city": "Dallas",&#10;    "state": "TX",&#10;    "postalCode": "75001",&#10;    "country": "US"&#10;  },&#10;  "delivery": {&#10;    "deliveryOption": "STANDARD",&#10;    "deliveryInstructions": "Leave at front door"&#10;  },&#10;  "payment": {&#10;    "paymentMethodType": "CARD",&#10;    "paymentToken": "tok_abc123xyz",&#10;    "paymentProvider": "STRIPE",&#10;    "authorizedAmount": 52.69,&#10;    "currency": "USD"&#10;  },&#10;  "promotions": [&#10;    {&#10;      "code": "SPRING10",&#10;      "type": "ORDER",&#10;      "amount": 2&#10;    }&#10;  ],&#10;  "orderAttributes": {&#10;    "gift": false,&#10;    "customerNotes": "Call if needed"&#10;  }&#10;}]' mediaType="application/java" />
+			</munit:set-event>
+			<flow-ref doc:name="Invoke POST Orders Flow" doc:id="bc57c8cb-3cf1-42a3-b656-22f14d2a0d05" name="post:\orders:application\json:order-experience-api-config" />
+		</munit:execution>
+		<munit:validation >
+			<munit-tools:assert-that doc:name="Assert Failed Status" doc:id="16c51dcc-49f9-4a8a-86d5-eed114c301bf" expression="#[payload.status]" is='#[MunitTools::equalTo("FAILED")]' />
+			<munit-tools:assert-that doc:name="Assert Object Store Failure Code" doc:id="fb83d98f-c39e-4630-bb6f-e91b04225979" expression="#[payload.code]" is='#[MunitTools::equalTo("ORDER_STATE_STORE_FAILED")]' />
+			<munit-tools:assert-that doc:name="Assert HTTP Status 500" doc:id="82757c9f-1df0-4eec-ae3c-da1e59afa6ab" expression="#[vars.httpStatus]" is="#[MunitTools::equalTo(500)]" />
+			<munit-tools:verify-call doc:name="Verify Duplicate Check Called Once" doc:id="d3ceb829-5b69-40c5-b788-7b3e3a617045" processor="flow-ref" times="1" >
+				<munit-tools:with-attributes >
+					<munit-tools:with-attribute whereValue="check-duplicate-order-subflow" attributeName="name" />
+				</munit-tools:with-attributes>
+			</munit-tools:verify-call>
+			<munit-tools:verify-call doc:name="Verify DB Transaction Called Once" doc:id="b1370a2d-d46f-49f2-b233-338a33cbbf90" processor="flow-ref" times="1" >
+				<munit-tools:with-attributes >
+					<munit-tools:with-attribute whereValue="Persist Order Transactionally" attributeName="doc:name" />
+				</munit-tools:with-attributes>
+			</munit-tools:verify-call>
+			<munit-tools:verify-call doc:name="Verify S3 Put Called Once" doc:id="ad65e507-80c7-46ab-95bd-0bcdf57e55d7" processor="s3:put-object" times="1" >
+				<munit-tools:with-attributes >
+					<munit-tools:with-attribute whereValue="Put Object" attributeName="doc:name" />
+				</munit-tools:with-attributes>
+			</munit-tools:verify-call>
+			<munit-tools:verify-call doc:name="Verify Object Store Called Once" doc:id="a7f3ad8a-85fd-488b-8de5-a0f88a840d0e" processor="os:store" times="1" >
+				<munit-tools:with-attributes >
+					<munit-tools:with-attribute whereValue="Store" attributeName="doc:name" />
+				</munit-tools:with-attributes>
+			</munit-tools:verify-call>
+		</munit:validation>
+	</munit:test>
+
+</mule>

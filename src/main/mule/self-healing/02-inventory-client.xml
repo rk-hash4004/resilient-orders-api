@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<mule xmlns="http://www.mulesoft.org/schema/mule/core" xmlns:ee="http://www.mulesoft.org/schema/mule/ee/core" xmlns:http="http://www.mulesoft.org/schema/mule/http" xmlns:os="http://www.mulesoft.org/schema/mule/os" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://www.mulesoft.org/schema/mule/core http://www.mulesoft.org/schema/mule/core/current/mule.xsd http://www.mulesoft.org/schema/mule/ee/core http://www.mulesoft.org/schema/mule/ee/core/current/mule-ee.xsd http://www.mulesoft.org/schema/mule/http http://www.mulesoft.org/schema/mule/http/current/mule-http.xsd http://www.mulesoft.org/schema/mule/os http://www.mulesoft.org/schema/mule/os/current/mule-os.xsd">
+	<!--
+		The CALLER side. A normal HTTP call to the downstream. Mule turns the HTTP result into a typed error:
+		  503 -> HTTP:SERVICE_UNAVAILABLE, timeout -> HTTP:TIMEOUT, no connection -> HTTP:CONNECTIVITY  (RETRY these)
+		  400 -> HTTP:BAD_REQUEST                                                                       (never retry)
+		Expects vars.sku and vars.idemKey. The SAME idemKey is sent on every retry.
+	-->
+	<flow name="self-healing-call-inventory">
+		<logger level="INFO" message="#['calling inventory, sku=' ++ vars.sku ++ ', idempotencyKey=' ++ vars.idemKey]" />
+		<http:request config-ref="SelfHealing_Downstream" method="GET" path="/mock/inventory/reserve" responseTimeout="2000">
+			<http:headers>#[{ 'X-Idempotency-Key': vars.idemKey }]</http:headers>
+			<http:query-params>#[{ sku: vars.sku }]</http:query-params>
+		</http:request>
+	</flow>
+</mule>

@@ -1,0 +1,7 @@
+{
+  "applicationName": "order-experience-api",
+  "runtime": "4.12.2:8e-java17",
+  "replicas": 1,
+  "replicaSize": "0.1",
+  "deploymentModel": "rolling"
+}

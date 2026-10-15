@@ -1,0 +1,115 @@
+<mule xmlns="http://www.mulesoft.org/schema/mule/core" xmlns:aggregators="http://www.mulesoft.org/schema/mule/aggregators" xmlns:batch="http://www.mulesoft.org/schema/mule/batch" xmlns:doc="http://www.mulesoft.org/schema/mule/documentation" xmlns:ee="http://www.mulesoft.org/schema/mule/ee/core" xmlns:http="http://www.mulesoft.org/schema/mule/http" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="         http://www.mulesoft.org/schema/mule/core http://www.mulesoft.org/schema/mule/core/current/mule.xsd         http://www.mulesoft.org/schema/mule/http http://www.mulesoft.org/schema/mule/http/current/mule-http.xsd         http://www.mulesoft.org/schema/mule/ee/core http://www.mulesoft.org/schema/mule/ee/core/current/mule-ee.xsd  http://www.mulesoft.org/schema/mule/batch http://www.mulesoft.org/schema/mule/batch/current/mule-batch.xsd  http://www.mulesoft.org/schema/mule/aggregators http://www.mulesoft.org/schema/mule/aggregators/current/mule-aggregators.xsd">
+  <flow name="patterns-splitter-aggregator-flow">
+    <http:listener config-ref="order-experience-api-httpListenerConfig" doc:id="fe-listener" doc:name="Listener" path="/patterns/foreach"></http:listener>
+    <set-payload doc:id="fe-order" doc:name="Order with items" value="#[%dw 2.0 output application/json --- { orderId: &quot;ORD-1001&quot;, items: [ { sku: &quot;SKU-9&quot;, qty: 2, unitPrice: 50 }, { sku: &quot;SKU-3&quot;, qty: 1, unitPrice: 30 }, { sku: &quot;SKU-7&quot;, qty: 4, unitPrice: 10 } ] }]"></set-payload>
+    <set-variable doc:id="fe-init" doc:name="init lineTotals" value="#[[]]" variableName="lineTotals"></set-variable>
+    <foreach collection="#[payload.items]" doc:id="fe-loop" doc:name="For Each item">
+      <flow-ref doc:id="fe-ref" doc:name="Process item" name="process-item"></flow-ref>
+      <set-variable doc:id="fe-acc" doc:name="accumulate" value="#[output application/json --- vars.lineTotals + { sku: payload.sku, lineTotal: payload.qty * payload.unitPrice }]" variableName="lineTotals"></set-variable>
+    </foreach>
+    <ee:transform doc:id="fe-show" doc:name="Show result">
+      <ee:message>
+        <ee:set-payload><![CDATA[%dw 2.0
+output application/json
+---
+{
+  payloadRestored: payload,
+  lineTotals:      vars.lineTotals,
+  grandTotal:      sum(vars.lineTotals map $.lineTotal)
+}]]></ee:set-payload>
+      </ee:message>
+    </ee:transform>
+  </flow>
+  <!-- Stands in for a real per-item API/DB call — the reason For-Each exists -->
+  <sub-flow name="process-item">
+    <logger doc:id="pi-log" doc:name="Log" level="INFO" message="#[&quot;Processing SKU: &quot; ++ (payload.sku default &quot;?&quot;)]"></logger>
+    <ee:transform doc:id="pi-tx" doc:name="Enrich item">
+      <ee:message>
+        <ee:set-payload><![CDATA[%dw 2.0
+output application/json
+---
+payload ++ { lineTotal: payload.qty * payload.unitPrice, status: "PROCESSED" }]]></ee:set-payload>
+      </ee:message>
+    </ee:transform>
+  </sub-flow>
+  <flow name="patterns-parallel-foreach-flow">
+    <http:listener config-ref="order-experience-api-httpListenerConfig" doc:id="pfe-listener" doc:name="Listener" path="/patterns/parallel-foreach"></http:listener>
+    <set-payload doc:id="pfe-order" doc:name="Order with items" value="#[%dw 2.0 output application/json --- { orderId: &quot;ORD-1001&quot;, items: [ { sku: &quot;SKU-9&quot;, qty: 2, unitPrice: 50 }, { sku: &quot;SKU-3&quot;, qty: 1, unitPrice: 30 }, { sku: &quot;SKU-7&quot;, qty: 4, unitPrice: 10 } ] }]"></set-payload>
+    <parallel-foreach collection="#[payload.items]" doc:id="pfe-loop" doc:name="Parallel For Each">
+      <flow-ref doc:id="pfe-ref" doc:name="Process item" name="process-item"></flow-ref>
+    </parallel-foreach>
+    <logger level="INFO" doc:name="RAW after parallel-foreach" message="#['RAW: ' ++ write(payload, 'application/json')]"></logger>
+    <ee:transform doc:id="pfe-show" doc:name="Show result">
+      <ee:message>
+        <ee:set-payload><![CDATA[%dw 2.0
+output application/json
+---
+{
+  rawAggregated:  payload,
+  itemsUnwrapped: payload map $.payload,
+  grandTotal:     sum(payload map $.payload.lineTotal)
+}]]></ee:set-payload>
+      </ee:message>
+    </ee:transform>
+  </flow>
+  <flow name="patterns-batch-flow">
+    <http:listener config-ref="order-experience-api-httpListenerConfig" doc:id="gehedl" doc:name="Listener" path="/patterns/batch"></http:listener>
+    <ee:transform doc:id="ugizdh" doc:name="Transform Message">
+      <ee:message>
+        <ee:set-payload doc:id="pdsxqt" doc:name="Set payload"><![CDATA[%dw 2.0
+output application/json
+---
+(1 to 12) map (i) -> {
+  sku: "SKU-" ++ (i as String),
+  qty: if ((i mod 5) == 0) -1 else (i mod 4) + 1,
+  unitPrice: i * 10
+}]]></ee:set-payload>
+      </ee:message>
+    </ee:transform>
+    <batch:job blockSize="5" doc:id="bdzflo" doc:name="Job" jobName="patterns-batch-lineitems" maxConcurrency="4" maxFailedRecords="-1">
+      <batch:process-records>
+        <batch:step doc:id="wfkjms" doc:name="Step" name="validate-and-price">
+          <logger doc:id="ongpyp" doc:name="Logger" message="#[&quot;record: &quot; ++ write(payload,&quot;application/json&quot;)]"></logger>
+          <choice doc:id="lzzezp" doc:name="Choice">
+            <when doc:name="When" expression="#[payload.qty &lt;= 0]">
+              <raise-error description="#[&quot;Bad qty &quot; ++ (payload.qty as String) ++ &quot; for &quot; ++ payload.sku]" doc:id="cklwur" doc:name="Raise error" type="APP:INVALID_LINE"></raise-error>
+            </when>
+            <otherwise>
+              <ee:transform doc:id="ebomrn" doc:name="Transform Message">
+                <ee:message>
+                  <ee:set-payload doc:id="xbeshb" doc:name="Set payload"><![CDATA[%dw 2.0
+output application/json
+---
+payload ++ { lineTotal: payload.qty * payload.unitPrice, status: "PRICED" }
+]]></ee:set-payload>
+                </ee:message>
+              </ee:transform>
+              <set-variable doc:id="eosiej" doc:name="Set variable" value="#[now()]" variableName="pricedAt"></set-variable>
+            </otherwise>
+          </choice>
+        </batch:step>
+        <batch:step doc:id="eltzeb" doc:name="Step" name="commit-good">
+          <logger doc:id="hgjrcg" doc:name="Logger" message='#[output application/java --- "Step2 sees " ++ payload.sku ++ " pricedAt=" ++ (vars.pricedAt as String)
+]'></logger>
+          <batch:aggregator doc:id="shznml" doc:name="Aggregator" size="5" streaming="false">
+            <logger doc:id="uiueaa" doc:name="Logger" message="#[output application/java --- &quot;BULK COMMIT &quot; ++ (sizeOf(payload) as String) ++ &quot; lines, chunkTotal=&quot; ++ (sum(payload map ((read($, &quot;application/json&quot;)).lineTotal)) as String)]"></logger>
+          </batch:aggregator>
+        </batch:step>
+        <batch:step acceptPolicy="ONLY_FAILURES" doc:id="nwmiuf" doc:name="Step" name="route-failed">
+          <logger doc:id="ehtltd" doc:name="Logger" message="#[&quot;DEAD-LETTER (would route to error table): &quot; ++ write(payload, &quot;application/json&quot;)]"></logger>
+        </batch:step>
+      </batch:process-records>
+      <batch:on-complete>
+        <logger doc:id="cbilse" doc:name="Logger" message="#[output application/java --- &quot;BATCH DONE - total=&quot; ++ (payload.totalRecords as String) ++ &quot; loaded=&quot; ++ (payload.loadedRecords as String) ++ &quot; success=&quot; ++ (payload.successfulRecords as String) ++ &quot; failed=&quot; ++ (payload.failedRecords as String) ++ &quot; elapsedMs=&quot; ++ (payload.elapsedTimeInMillis as String)]"></logger>
+      </batch:on-complete>
+    </batch:job>
+    <ee:transform doc:id="ldwtzv" doc:name="Transform Message">
+      <ee:message>
+        <ee:set-payload doc:id="ltzefs" doc:name="Set payload"><![CDATA[%dw 2.0
+output application/json
+---
+{ accepted: true, batchJobInstanceId: payload.id }]]></ee:set-payload>
+      </ee:message>
+    </ee:transform>
+  </flow>
+</mule>

@@ -1,0 +1,141 @@
+<?xml version="1.0" encoding="UTF-8"?>
+
+<mule xmlns:db="http://www.mulesoft.org/schema/mule/db" xmlns:kafka="http://www.mulesoft.org/schema/mule/kafka"
+	xmlns="http://www.mulesoft.org/schema/mule/core"
+	xmlns:doc="http://www.mulesoft.org/schema/mule/documentation" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://www.mulesoft.org/schema/mule/core http://www.mulesoft.org/schema/mule/core/current/mule.xsd
+http://www.mulesoft.org/schema/mule/kafka http://www.mulesoft.org/schema/mule/kafka/current/mule-kafka.xsd
+http://www.mulesoft.org/schema/mule/db http://www.mulesoft.org/schema/mule/db/current/mule-db.xsd">
+	<flow name="order-notification-consumerFlow" doc:id="6e6bc595-3736-4a7b-8ee9-dbc3696de325" >
+		<kafka:message-listener doc:name="Message listener" doc:id="7811a7d0-7229-4f93-be89-5dd49a6c039e" config-ref="Apache_Kafka_Consumer_configuration" ackMode="MANUAL"/>
+		<set-variable value="#[attributes]" doc:name="Save Kafka Attributes" doc:id="126642f2-689d-4b21-a7c6-95c84d8e1eaa" variableName="kafkaAttributes" />
+		<set-variable variableName="requestCorrelationId" value="#[(vars.kafkaAttributes.headers['x-correlation-id'] as String) default correlationId]" doc:name="Read correlationId from Kafka header"/>
+
+		<set-variable variableName="logEvent" value="#['KAFKA_ORDER_EVENT_RECEIVED']" doc:name="logEvent"/>
+		<set-variable variableName="logContext" doc:name="logContext" value="#[%dw 2.0
+output application/java
+---
+{
+    rawPayload: payload as String,
+    key: vars.kafkaAttributes.key default null,
+    topic: vars.kafkaAttributes.topic default null,
+    partition: vars.kafkaAttributes.partition default null,
+    offset: vars.kafkaAttributes.offset default null
+}]"/>
+		<flow-ref name="log-event-subflow" doc:name="Log KAFKA_ORDER_EVENT_RECEIVED"/>
+
+		<set-variable value='#[read(payload as String,"application/json")]' doc:name="Parse Order Event" doc:id="3d511e6f-47db-4c62-988f-49f869a2b87b" variableName="orderEvent" />
+
+		<set-variable variableName="logEvent" value="#['ORDER_EVENT_PARSED']" doc:name="logEvent"/>
+		<set-variable variableName="logContext" doc:name="logContext" value="#[%dw 2.0
+output application/java
+---
+{
+    eventId: vars.orderEvent.eventId,
+    eventType: vars.orderEvent.eventType,
+    orderId: vars.orderEvent.orderId,
+    kafkaKey: vars.kafkaAttributes.key default null,
+    topic: vars.kafkaAttributes.topic default null,
+    partition: vars.kafkaAttributes.partition default null,
+    offset: vars.kafkaAttributes.offset default null
+}]"/>
+		<flow-ref name="log-event-subflow" doc:name="Log ORDER_EVENT_PARSED"/>
+
+		<db:select doc:name="Check Processed Event" doc:id="6b8ba7e5-5dbd-4f42-a518-5fa716641864" config-ref="Database_Config" target="processedEvent">
+			<db:sql ><![CDATA[SELECT
+    consumer_name,
+    event_id,
+    processed_at
+FROM processed_events
+WHERE consumer_name = :consumerName
+  AND event_id = :eventId]]></db:sql>
+			<db:input-parameters ><![CDATA[#[%dw 2.0
+output application/java
+---
+{
+    consumerName: "order-notification-consumer",
+    eventId: vars.orderEvent.eventId
+}]]]></db:input-parameters>
+		</db:select>
+		<choice doc:name="Check Duplicate Event">
+			<when expression="#[!isEmpty(vars.processedEvent)]">
+				<set-variable variableName="logEvent" value="#['DUPLICATE_KAFKA_EVENT_SKIPPED']" doc:name="logEvent"/>
+				<set-variable variableName="logContext" doc:name="logContext" value="#[%dw 2.0
+output application/java
+---
+{
+    consumerName: &quot;order-notification-consumer&quot;,
+    eventId: vars.orderEvent.eventId,
+    orderId: vars.orderEvent.orderId,
+    topic: vars.kafkaAttributes.topic default null,
+    partition: vars.kafkaAttributes.partition default null,
+    offset: vars.kafkaAttributes.offset default null
+}]"/>
+				<flow-ref name="log-event-subflow" doc:name="Log DUPLICATE_KAFKA_EVENT_SKIPPED"/>
+    </when>
+			<otherwise >
+				<set-variable variableName="logEvent" value="#['ORDER_EVENT_PROCESSED']" doc:name="logEvent"/>
+				<set-variable variableName="logContext" doc:name="logContext" value="#[%dw 2.0
+output application/java
+---
+{
+    eventId: vars.orderEvent.eventId,
+    eventType: vars.orderEvent.eventType,
+    orderId: vars.orderEvent.orderId,
+    topic: vars.kafkaAttributes.topic default null,
+    partition: vars.kafkaAttributes.partition default null,
+    offset: vars.kafkaAttributes.offset default null
+}]"/>
+				<flow-ref name="log-event-subflow" doc:name="Log ORDER_EVENT_PROCESSED"/>
+				<db:insert doc:name="Insert" doc:id="12bc0c05-6c52-4c26-bfc9-92d4736ac39c" config-ref="Database_Config">
+					<db:sql ><![CDATA[INSERT INTO processed_events (
+    consumer_name,
+    event_id
+)
+VALUES (
+    :consumerName,
+    :eventId
+)]]></db:sql>
+					<db:input-parameters ><![CDATA[#[%dw 2.0
+output application/java
+---
+{
+    consumerName: "order-notification-consumer",
+    eventId: vars.orderEvent.eventId
+}]]]></db:input-parameters>
+				</db:insert>
+			</otherwise>
+</choice>
+		<kafka:commit doc:name="Commit Kafka Offset" doc:id="ada86b8a-a317-4c7e-919d-bc3865b5ea4a" config-ref="Apache_Kafka_Consumer_configuration" commitKey="#[vars.kafkaAttributes.consumerCommitKey]"/>
+
+		<set-variable variableName="logEvent" value="#['KAFKA_OFFSET_COMMITTED']" doc:name="logEvent"/>
+		<set-variable variableName="logContext" doc:name="logContext" value="#[%dw 2.0
+output application/java
+---
+{
+    eventId: vars.orderEvent.eventId,
+    orderId: vars.orderEvent.orderId,
+    topic: vars.kafkaAttributes.topic default null,
+    partition: vars.kafkaAttributes.partition default null,
+    offset: vars.kafkaAttributes.offset default null
+}]"/>
+		<flow-ref name="log-event-subflow" doc:name="Log KAFKA_OFFSET_COMMITTED"/>
+
+		<error-handler >
+			<on-error-propagate enableNotifications="true" logException="true" doc:name="Propagate Consumer Failure" doc:id="1de22b6b-529e-487d-b817-11422dc3310b" >
+				<set-variable variableName="logEvent" value="#['KAFKA_CONSUMER_FAILED']" doc:name="logEvent"/>
+				<set-variable variableName="logError" value="#[error]" doc:name="logError"/>
+				<set-variable variableName="logContext" doc:name="logContext" value="#[%dw 2.0
+output application/java
+---
+{
+    eventId: vars.orderEvent.eventId default null,
+    orderId: vars.orderEvent.orderId default null,
+    topic: vars.kafkaAttributes.topic default null,
+    partition: vars.kafkaAttributes.partition default null,
+    offset: vars.kafkaAttributes.offset default null
+}]"/>
+				<flow-ref name="log-error-event-subflow" doc:name="Log KAFKA_CONSUMER_FAILED"/>
+			</on-error-propagate>
+		</error-handler>
+	</flow>
+</mule>

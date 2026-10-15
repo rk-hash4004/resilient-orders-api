@@ -1,0 +1,29 @@
+<mule xmlns="http://www.mulesoft.org/schema/mule/core" xmlns:doc="http://www.mulesoft.org/schema/mule/documentation" xmlns:ee="http://www.mulesoft.org/schema/mule/ee/core" xmlns:http="http://www.mulesoft.org/schema/mule/http" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="         http://www.mulesoft.org/schema/mule/core http://www.mulesoft.org/schema/mule/core/current/mule.xsd         http://www.mulesoft.org/schema/mule/http http://www.mulesoft.org/schema/mule/http/current/mule-http.xsd         http://www.mulesoft.org/schema/mule/ee/core http://www.mulesoft.org/schema/mule/ee/core/current/mule-ee.xsd">
+    <flow name="patterns-content-enricher-flow">
+        <http:listener config-ref="order-experience-api-httpListenerConfig" doc:id="zaxdqm" doc:name="Listener" path="/patterns/content-enricher"></http:listener>
+        <set-payload doc:id="vqgzdw" doc:name="Set payload" value="#[%dw 2.0 output application/json --- { orderId: &quot;ORD-1001&quot;, customerId: &quot;CUST-1&quot;, sku: &quot;SKU-9&quot; }]"></set-payload>
+        <flow-ref doc:name="Flow-ref" name="lookup-customer" target="customer"/>
+        <flow-ref doc:name="Flow-ref" name="lookup-inventory" target="inventory"/>
+        <flow-ref doc:name="Flow-ref" name="lookup-shipping" target="eta" targetValue="#[payload.etaDays]"/>
+        <ee:transform doc:name="Transform Message" doc:id="ttjpzw" >
+            <ee:message >
+                <ee:set-payload doc:name="Set payload" doc:id="hnakat" ><![CDATA[%dw 2.0
+output application/json
+---
+payload ++ {
+  customer:  vars.customer,
+  inventory: vars.inventory,
+  etaDays:   vars.eta
+}]]></ee:set-payload>
+            </ee:message>
+        </ee:transform>
+    </flow>
+    <sub-flow name="lookup-customer">
+        <set-payload doc:id="gbywma" doc:name="Set payload" value="#[%dw 2.0 output application/json --- { customerName: &quot;John Doe&quot;, tier: &quot;GOLD&quot; }]"></set-payload>
+    </sub-flow>
+    <sub-flow name="lookup-inventory">
+        <set-payload doc:id="eesooi" doc:name="Set payload" value="#[%dw 2.0 output application/json --- { available: true, warehouse: &quot;DAL-1&quot; }]"></set-payload>
+    </sub-flow>
+    <sub-flow name="lookup-shipping">
+        <set-payload doc:name="Set payload" doc:id="yksvil" value='#[%dw 2.0 output application/json --- { method: "STANDARD", etaDays: 3 }]'/></sub-flow>
+</mule>

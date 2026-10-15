@@ -1,0 +1,155 @@
+<?xml version="1.0" encoding="UTF-8"?>
+
+<mule xmlns="http://www.mulesoft.org/schema/mule/core"
+	xmlns:doc="http://www.mulesoft.org/schema/mule/documentation"
+	xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+	xmlns:http="http://www.mulesoft.org/schema/mule/http"
+	xmlns:anypoint-mq="http://www.mulesoft.org/schema/mule/anypoint-mq"
+	xsi:schemaLocation="http://www.mulesoft.org/schema/mule/core http://www.mulesoft.org/schema/mule/core/current/mule.xsd
+http://www.mulesoft.org/schema/mule/http http://www.mulesoft.org/schema/mule/http/current/mule-http.xsd
+http://www.mulesoft.org/schema/mule/anypoint-mq http://www.mulesoft.org/schema/mule/anypoint-mq/current/mule-anypoint-mq.xsd">
+
+	<!--
+		Retry/DLQ pattern, revised: retry-q calls SAP itself and loops back
+		to retry-q with a GROWING delay, instead of routing back through
+		orders-main-q.
+
+		orders-main-q -> Main Consumer -> Call SAP
+		  Success -> ack
+		  Failure -> retryCount=1, publish to retry-q (delay), ack
+
+		orders-retry-q -> Retry Consumer -> Call SAP again
+		  Success -> ack
+		  Failure -> retryCount < max? -> publish BACK to retry-q with a
+		             bigger delay, ack
+		           : retryCount >= max? -> DLQ, ack
+
+		Both consumers call the SAME "call-sap-subflow" for the actual SAP
+		request + error classification, so that logic exists in one place.
+
+		Needs added to config/${env}.yaml:
+		  anypoint.mq.region, orders.main.queue, orders.retry.queue,
+		  orders.dlq.queue, sap.request.path, retry.maxAttempts,
+		  retry.baseDelaySeconds, retry.maxDelaySeconds
+		Needs added to config/secure-${env}.yaml:
+		  anypoint.mq.clientId, anypoint.mq.clientSecret
+		Still to create in Studio: SAP_HTTP_Request_config (host/port/auth
+		for your actual SAP endpoint - not guessed here)
+	-->
+
+	<anypoint-mq:config name="Anypoint_MQ_Config" doc:name="Anypoint MQ Config">
+		<anypoint-mq:connection clientId="${secure::anypoint.mq.clientId}" clientSecret="${secure::anypoint.mq.clientSecret}" url="#['https://mq-' ++ p('anypoint.mq.region') ++ '.anypoint.mulesoft.com/api/v1']"/>
+	</anypoint-mq:config>
+
+	<!--
+		Shared SAP-call logic. Caller must set vars.retryCount before
+		calling. Sets vars.callSucceeded (boolean), and on failure also
+		vars.callError and vars.isTransient. Never propagates the SAP error
+		further - caller always gets control back and branches on
+		vars.callSucceeded.
+	-->
+	<sub-flow name="call-sap-subflow" doc:id="b0000001-0000-0000-0000-000000000001">
+		<try doc:name="Try Call SAP" doc:id="b0000002">
+			<http:request doc:name="Call SAP" doc:id="b0000003" method="POST" config-ref="SAP_HTTP_Request_config" path="#[p('sap.request.path')]">
+				<http:body><![CDATA[#[payload]]]></http:body>
+			</http:request>
+
+			<set-variable variableName="callSucceeded" value="#[true]" doc:name="Mark Succeeded" doc:id="b0000004"/>
+			<logger level="INFO" doc:name="Log SAP Success" doc:id="b0000005" message='#[write({event: "SAP_CALL_SUCCEEDED", retryCount: vars.retryCount, timestamp: now()}, "application/json")]'/>
+
+			<error-handler>
+				<on-error-continue enableNotifications="true" logException="true" doc:name="Handle SAP Failure" doc:id="b0000006">
+					<set-variable variableName="callSucceeded" value="#[false]" doc:name="Mark Failed" doc:id="b0000007"/>
+					<set-variable variableName="callError" value="#[error]" doc:name="Save Error" doc:id="b0000008"/>
+					<set-variable variableName="isTransient" value="#[%dw 2.0
+output application/java
+var statusCode = vars.callError.errorMessage.attributes.statusCode default 0
+---
+(['CONNECTIVITY', 'TIMEOUT'] contains(vars.callError.errorType.identifier)) or (statusCode >= 500)]" doc:name="Classify Error" doc:id="b0000009"/>
+
+					<logger level="ERROR" doc:name="Log SAP Failure" doc:id="b0000010" message='#[write({event: "SAP_CALL_FAILED", retryCount: vars.retryCount, isTransient: vars.isTransient, errorType: vars.callError.errorType as String, errorDescription: vars.callError.description default null, timestamp: now()}, "application/json")]'/>
+				</on-error-continue>
+			</error-handler>
+		</try>
+	</sub-flow>
+
+	<flow name="orders-main-consumer-flow" doc:id="a1000001-0000-0000-0000-000000000001">
+		<anypoint-mq:subscriber doc:name="Subscribe orders-main-q" doc:id="a1000002" config-ref="Anypoint_MQ_Config" destination="#[p('orders.main.queue')]" acknowledgementMode="MANUAL"/>
+
+		<set-variable variableName="mqAttributes" value="#[attributes]" doc:name="Save MQ Attributes" doc:id="a1000003"/>
+		<set-variable variableName="retryCount" value="#[0]" doc:name="First Attempt" doc:id="a1000004"/>
+
+		<logger level="INFO" doc:name="Log Message Received" doc:id="a1000005" message='#[write({event: "ORDER_MESSAGE_RECEIVED", messageId: vars.mqAttributes.messageId, timestamp: now()}, "application/json")]'/>
+
+		<flow-ref name="call-sap-subflow" doc:name="Call SAP" doc:id="a1000006"/>
+
+		<choice doc:name="Succeeded?" doc:id="a1000007">
+			<when expression="#[vars.callSucceeded]">
+				<anypoint-mq:ack doc:name="Ack (Success)" doc:id="a1000008" config-ref="Anypoint_MQ_Config" ackToken="#[vars.mqAttributes.ackToken]"/>
+			</when>
+			<otherwise>
+				<set-variable variableName="nextRetryCount" value="#[1]" doc:name="Set Next Retry Count" doc:id="a1000009"/>
+				<set-variable variableName="retryDelaySeconds" value="#[p('retry.baseDelaySeconds') as Number]" doc:name="First Retry Delay" doc:id="a1000010"/>
+
+				<anypoint-mq:publish doc:name="Publish to retry-q" doc:id="a1000011" config-ref="Anypoint_MQ_Config" destination="#[p('orders.retry.queue')]" deliveryDelay="#[vars.retryDelaySeconds]">
+					<anypoint-mq:body><![CDATA[#[payload]]]></anypoint-mq:body>
+					<anypoint-mq:properties><![CDATA[#[{retryCount: vars.nextRetryCount as String}]]]></anypoint-mq:properties>
+				</anypoint-mq:publish>
+
+				<logger level="WARN" doc:name="Log Scheduled Retry" doc:id="a1000012" message='#[write({event: "ORDER_RETRY_SCHEDULED", messageId: vars.mqAttributes.messageId, nextRetryCount: vars.nextRetryCount, delaySeconds: vars.retryDelaySeconds, timestamp: now()}, "application/json")]'/>
+
+				<anypoint-mq:ack doc:name="Ack (Scheduled Retry)" doc:id="a1000013" config-ref="Anypoint_MQ_Config" ackToken="#[vars.mqAttributes.ackToken]"/>
+			</otherwise>
+		</choice>
+	</flow>
+
+	<flow name="orders-retry-consumer-flow" doc:id="a2000001-0000-0000-0000-000000000001">
+		<anypoint-mq:subscriber doc:name="Subscribe orders-retry-q" doc:id="a2000002" config-ref="Anypoint_MQ_Config" destination="#[p('orders.retry.queue')]" acknowledgementMode="MANUAL"/>
+
+		<set-variable variableName="mqAttributes" value="#[attributes]" doc:name="Save MQ Attributes" doc:id="a2000003"/>
+		<set-variable variableName="retryCount" value="#[(vars.mqAttributes.properties.retryCount default '1') as Number]" doc:name="Read Retry Count" doc:id="a2000004"/>
+
+		<logger level="INFO" doc:name="Log Retry Attempt" doc:id="a2000005" message='#[write({event: "ORDER_RETRY_ATTEMPT", messageId: vars.mqAttributes.messageId, retryCount: vars.retryCount, timestamp: now()}, "application/json")]'/>
+
+		<flow-ref name="call-sap-subflow" doc:name="Call SAP Again" doc:id="a2000006"/>
+
+		<choice doc:name="Succeeded?" doc:id="a2000007">
+			<when expression="#[vars.callSucceeded]">
+				<anypoint-mq:ack doc:name="Ack (Success)" doc:id="a2000008" config-ref="Anypoint_MQ_Config" ackToken="#[vars.mqAttributes.ackToken]"/>
+				<logger level="INFO" doc:name="Log Retry Succeeded" doc:id="a2000009" message='#[write({event: "ORDER_RETRY_SUCCEEDED", messageId: vars.mqAttributes.messageId, retryCount: vars.retryCount, timestamp: now()}, "application/json")]'/>
+			</when>
+			<otherwise>
+				<choice doc:name="Retries Remaining?" doc:id="a2000010">
+					<when expression="#[vars.retryCount &lt; (p('retry.maxAttempts') as Number)]">
+						<set-variable variableName="nextRetryCount" value="#[vars.retryCount + 1]" doc:name="Increment Retry Count" doc:id="a2000011"/>
+						<set-variable variableName="retryDelaySeconds" value="#[%dw 2.0
+output application/java
+var base = p('retry.baseDelaySeconds') as Number
+var cap = p('retry.maxDelaySeconds') as Number
+var computed = base * (2 pow vars.nextRetryCount)
+---
+if (computed > cap) cap else computed]" doc:name="Calculate Bigger Delay" doc:id="a2000012"/>
+
+						<anypoint-mq:publish doc:name="Publish Back to retry-q" doc:id="a2000013" config-ref="Anypoint_MQ_Config" destination="#[p('orders.retry.queue')]" deliveryDelay="#[vars.retryDelaySeconds]">
+							<anypoint-mq:body><![CDATA[#[payload]]]></anypoint-mq:body>
+							<anypoint-mq:properties><![CDATA[#[{retryCount: vars.nextRetryCount as String}]]]></anypoint-mq:properties>
+						</anypoint-mq:publish>
+
+						<logger level="WARN" doc:name="Log Retry Rescheduled" doc:id="a2000014" message='#[write({event: "ORDER_RETRY_RESCHEDULED", messageId: vars.mqAttributes.messageId, nextRetryCount: vars.nextRetryCount, delaySeconds: vars.retryDelaySeconds, timestamp: now()}, "application/json")]'/>
+					</when>
+					<otherwise>
+						<anypoint-mq:publish doc:name="Publish to DLQ" doc:id="a2000015" config-ref="Anypoint_MQ_Config" destination="#[p('orders.dlq.queue')]">
+							<anypoint-mq:body><![CDATA[#[payload]]]></anypoint-mq:body>
+							<anypoint-mq:properties><![CDATA[#[{retryCount: vars.retryCount as String, lastError: vars.callError.description default '' as String}]]]></anypoint-mq:properties>
+						</anypoint-mq:publish>
+
+						<logger level="ERROR" doc:name="Log Sent To DLQ" doc:id="a2000016" message='#[write({event: "ORDER_SENT_TO_DLQ", messageId: vars.mqAttributes.messageId, retryCount: vars.retryCount, reason: "MAX_RETRIES_EXCEEDED", timestamp: now()}, "application/json")]'/>
+					</otherwise>
+				</choice>
+
+				<anypoint-mq:ack doc:name="Ack (Retry Handled)" doc:id="a2000017" config-ref="Anypoint_MQ_Config" ackToken="#[vars.mqAttributes.ackToken]"/>
+			</otherwise>
+		</choice>
+	</flow>
+
+</mule>

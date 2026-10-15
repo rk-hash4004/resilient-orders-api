@@ -1,0 +1,44 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<mule xmlns="http://www.mulesoft.org/schema/mule/core" xmlns:ee="http://www.mulesoft.org/schema/mule/ee/core" xmlns:http="http://www.mulesoft.org/schema/mule/http" xmlns:os="http://www.mulesoft.org/schema/mule/os" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://www.mulesoft.org/schema/mule/core http://www.mulesoft.org/schema/mule/core/current/mule.xsd http://www.mulesoft.org/schema/mule/ee/core http://www.mulesoft.org/schema/mule/ee/core/current/mule-ee.xsd http://www.mulesoft.org/schema/mule/http http://www.mulesoft.org/schema/mule/http/current/mule-http.xsd http://www.mulesoft.org/schema/mule/os http://www.mulesoft.org/schema/mule/os/current/mule-os.xsd">
+	<!-- Option A: built-in Until Successful. Fixed 1000 ms wait. Retries ANY error, so permanent ones are caught INSIDE the scope to stop retrying. -->
+	<flow name="self-healing-fixed-retry-flow">
+		<http:listener config-ref="order-experience-api-httpListenerConfig" path="/self-healing/fixed" />
+		<set-variable variableName="idemKey" value="#[uuid()]" />
+		<set-variable variableName="sku" value="#[attributes.queryParams.sku default 'TILE-1']" />
+		<set-variable variableName="outcome" value="SUCCESS" />
+		<try>
+			<until-successful maxRetries="5" millisBetweenRetries="1000">
+				<try>
+					<flow-ref name="self-healing-call-inventory" />
+					<set-variable variableName="reservation" value="#[payload]" />
+					<error-handler>
+						<on-error-continue type="HTTP:BAD_REQUEST, HTTP:NOT_FOUND, HTTP:UNAUTHORIZED, HTTP:FORBIDDEN">
+							<set-variable variableName="outcome" value="FAILED_NOT_RETRIED (permanent error)" />
+							<set-variable variableName="errorText" value="#[error.description]" />
+						</on-error-continue>
+					</error-handler>
+				</try>
+			</until-successful>
+			<error-handler>
+				<on-error-continue type="MULE:RETRY_EXHAUSTED">
+					<set-variable variableName="outcome" value="GAVE_UP (MULE:RETRY_EXHAUSTED)" />
+					<set-variable variableName="errorText" value="#[error.description]" />
+				</on-error-continue>
+			</error-handler>
+		</try>
+		<ee:transform>
+			<ee:message>
+				<ee:set-payload><![CDATA[%dw 2.0
+output application/json
+---
+{
+  pattern: "until-successful, fixed 1000 ms",
+  outcome: vars.outcome,
+  idempotencyKey: vars.idemKey,
+  downstream: vars.reservation default null,
+  lastError: vars.errorText default null
+}]]></ee:set-payload>
+			</ee:message>
+		</ee:transform>
+	</flow>
+</mule>

@@ -1,0 +1,21 @@
+<mule xmlns="http://www.mulesoft.org/schema/mule/core" xmlns:doc="http://www.mulesoft.org/schema/mule/documentation" xmlns:ee="http://www.mulesoft.org/schema/mule/ee/core" xmlns:http="http://www.mulesoft.org/schema/mule/http" xmlns:os="http://www.mulesoft.org/schema/mule/os" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://www.mulesoft.org/schema/mule/core http://www.mulesoft.org/schema/mule/core/current/mule.xsd  http://www.mulesoft.org/schema/mule/http http://www.mulesoft.org/schema/mule/http/current/mule-http.xsd  http://www.mulesoft.org/schema/mule/os http://www.mulesoft.org/schema/mule/os/current/mule-os.xsd  http://www.mulesoft.org/schema/mule/ee/core http://www.mulesoft.org/schema/mule/ee/core/current/mule-ee.xsd">
+    <flow name="patterns-claim-check-flow">
+        <http:listener config-ref="order-experience-api-httpListenerConfig" doc:id="fqafgd" doc:name="Listener" path="/patterns/claim-check"></http:listener>
+        <set-payload doc:id="cbigpv" doc:name="Set payload" value="#[%dw 2.0 output application/json --- { orderId: &quot;ORD-4001&quot;, attachmentData: (1 to 5000) map &quot;X&quot; joinBy &quot;&quot; }]"></set-payload>
+        <set-variable doc:id="cktfhx" doc:name="Set variable" value="#[uuid()]" variableName="claimCheckId"></set-variable>
+        <os:store doc:id="zqddes" doc:name="Store" key="#[vars.claimCheckId]" objectStore="Object_store"></os:store>
+        <ee:transform doc:id="nbrntc" doc:name="Transform Message">
+            <ee:message>
+                <ee:set-payload doc:id="agltno" doc:name="Set payload"><![CDATA[%dw 2.0
+output application/json
+---
+{ orderId: payload.orderId, claimCheckId: vars.claimCheckId, message: "Attachment stored — use claim check to retrieve" }
+]]></ee:set-payload>
+            </ee:message>
+        </ee:transform>
+    </flow>
+    <flow name="patterns-claim-check-redeem-flow">
+        <http:listener doc:name="Listener" doc:id="qdamhi" path="/patterns/claim-check/{claimCheckId}" config-ref="order-experience-api-httpListenerConfig"/>
+        <os:retrieve doc:name="Retrieve" doc:id="nwtegz" key="#[attributes.uriParams.claimCheckId]" objectStore="Object_store" target="fullOrder"/>
+        <set-payload doc:name="Set payload" doc:id="hakypl" value="#[vars.fullOrder]"/></flow>
+</mule>

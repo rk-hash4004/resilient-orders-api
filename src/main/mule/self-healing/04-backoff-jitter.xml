@@ -1,0 +1,95 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<mule xmlns="http://www.mulesoft.org/schema/mule/core" xmlns:doc="http://www.mulesoft.org/schema/mule/documentation" xmlns:ee="http://www.mulesoft.org/schema/mule/ee/core" xmlns:http="http://www.mulesoft.org/schema/mule/http" xmlns:os="http://www.mulesoft.org/schema/mule/os" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://www.mulesoft.org/schema/mule/core http://www.mulesoft.org/schema/mule/core/current/mule.xsd http://www.mulesoft.org/schema/mule/ee/core http://www.mulesoft.org/schema/mule/ee/core/current/mule-ee.xsd http://www.mulesoft.org/schema/mule/http http://www.mulesoft.org/schema/mule/http/current/mule-http.xsd http://www.mulesoft.org/schema/mule/os http://www.mulesoft.org/schema/mule/os/current/mule-os.xsd">
+	<!-- Option B: retry with exponential backoff + jitter. wait = baseMs * 2^(attempt-1) + random(jitterMs). Only temporary errors are retried. -->
+	<flow name="self-healing-backoff-retry-flow">
+		<http:listener config-ref="order-experience-api-httpListenerConfig" path="/self-healing/backoff">
+			<http:response statusCode="#[vars.httpStatus default 200]" />
+		</http:listener>
+		<ee:transform doc:name="Settings">
+			<ee:variables>
+				<ee:set-variable variableName="idemKey"><![CDATA[uuid()]]></ee:set-variable>
+				<ee:set-variable variableName="sku"><![CDATA[attributes.queryParams.sku default 'TILE-1']]></ee:set-variable>
+				<ee:set-variable variableName="baseMs"><![CDATA[500]]></ee:set-variable>
+				<ee:set-variable variableName="jitterMs"><![CDATA[250]]></ee:set-variable>
+				<ee:set-variable variableName="maxAttempts"><![CDATA[5]]></ee:set-variable>
+				<ee:set-variable variableName="statusCode"><![CDATA[null]]></ee:set-variable>
+			</ee:variables>
+		</ee:transform>
+		<!-- vars.counter = attempt number (1, 2, 3 ...), provided by foreach -->
+		<foreach collection="#[1 to vars.maxAttempts]">
+			<choice>
+				<when expression="#[vars.statusCode == null]">
+					<try>
+						<flow-ref name="self-healing-call-inventory" />
+						<!-- reaching this line means the status was 2xx (Mule raises an error otherwise) -->
+						<ee:transform doc:name="Save response">
+							<ee:variables>
+								<ee:set-variable variableName="statusCode"><![CDATA[attributes.statusCode]]></ee:set-variable>
+								<ee:set-variable variableName="reservation"><![CDATA[payload]]></ee:set-variable>
+							</ee:variables>
+						</ee:transform>
+						<error-handler>
+							<!-- Temporary error: wait base * 2^(attempt-1) + jitter, then the loop tries again. Other errors (400 ...) are not caught, so they fail at once. -->
+							<on-error-continue type="HTTP:SERVICE_UNAVAILABLE, HTTP:TIMEOUT, HTTP:CONNECTIVITY, HTTP:INTERNAL_SERVER_ERROR, HTTP:TOO_MANY_REQUESTS">
+								<set-variable variableName="delayMs" value="#[vars.baseMs * (2 pow (vars.counter - 1)) + randomInt(vars.jitterMs)]" />
+								<choice>
+									<when expression="#[vars.counter &lt; vars.maxAttempts]">
+										<logger level="WARN" message="#['attempt ' ++ vars.counter ++ ' failed, waiting ' ++ vars.delayMs ++ ' ms']" />
+										<ee:transform doc:name="Wait">
+									<ee:message>
+										<ee:set-payload><![CDATA[%dw 2.0
+import wait from dw::Runtime
+output application/json
+---
+wait(payload, vars.delayMs)]]></ee:set-payload>
+									</ee:message>
+								</ee:transform>
+									</when>
+								</choice>
+							</on-error-continue>
+						</error-handler>
+					</try>
+				</when>
+			</choice>
+		</foreach>
+		<!-- After the loop: if no attempt ever succeeded, raise our own error. It is handled in this flow's error-handler below. -->
+		<choice>
+			<when expression="#[vars.statusCode == null]">
+				<raise-error type="CUSTOM:RETRY_EXHAUSTED" description="Inventory still failing after all retry attempts" />
+			</when>
+		</choice>
+		<ee:transform doc:name="Success response">
+			<ee:message>
+				<ee:set-payload><![CDATA[%dw 2.0
+output application/json
+---
+{
+  outcome: "SUCCESS",
+  statusCode: vars.statusCode,
+  idempotencyKey: vars.idemKey,
+  downstream: vars.reservation
+}]]></ee:set-payload>
+			</ee:message>
+		</ee:transform>
+		<error-handler>
+			<on-error-continue type="CUSTOM:RETRY_EXHAUSTED">
+				<ee:transform doc:name="Retries exhausted">
+					<ee:message>
+						<ee:set-payload><![CDATA[%dw 2.0
+output application/json
+---
+{
+  outcome: "RETRY_EXHAUSTED",
+  message: "Inventory still failing after " ++ vars.maxAttempts ++ " attempts",
+  idempotencyKey: vars.idemKey
+}]]></ee:set-payload>
+					</ee:message>
+					<ee:variables>
+						<ee:set-variable variableName="httpStatus"><![CDATA[503]]></ee:set-variable>
+					</ee:variables>
+				</ee:transform>
+			</on-error-continue>
+		</error-handler>
+	</flow>
+
+</mule>

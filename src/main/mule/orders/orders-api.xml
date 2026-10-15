@@ -1,0 +1,512 @@
+<mule xmlns="http://www.mulesoft.org/schema/mule/core" xmlns:apikit="http://www.mulesoft.org/schema/mule/mule-apikit" xmlns:db="http://www.mulesoft.org/schema/mule/db" xmlns:doc="http://www.mulesoft.org/schema/mule/documentation" xmlns:ee="http://www.mulesoft.org/schema/mule/ee/core" xmlns:http="http://www.mulesoft.org/schema/mule/http" xmlns:os="http://www.mulesoft.org/schema/mule/os" xmlns:s3="http://www.mulesoft.org/schema/mule/s3" xmlns:sqs="http://www.mulesoft.org/schema/mule/sqs" xmlns:tracing="http://www.mulesoft.org/schema/mule/tracing" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://www.mulesoft.org/schema/mule/core http://www.mulesoft.org/schema/mule/core/current/mule.xsd http://www.mulesoft.org/schema/mule/http http://www.mulesoft.org/schema/mule/http/current/mule-http.xsd http://www.mulesoft.org/schema/mule/mule-apikit http://www.mulesoft.org/schema/mule/mule-apikit/current/mule-apikit.xsd http://www.mulesoft.org/schema/mule/ee/core http://www.mulesoft.org/schema/mule/ee/core/current/mule-ee.xsd  http://www.mulesoft.org/schema/mule/tracing http://www.mulesoft.org/schema/mule/tracing/current/mule-tracing.xsd http://www.mulesoft.org/schema/mule/s3 http://www.mulesoft.org/schema/mule/s3/current/mule-s3.xsd http://www.mulesoft.org/schema/mule/sqs http://www.mulesoft.org/schema/mule/sqs/current/mule-sqs.xsd http://www.mulesoft.org/schema/mule/os http://www.mulesoft.org/schema/mule/os/current/mule-os.xsd http://www.mulesoft.org/schema/mule/db http://www.mulesoft.org/schema/mule/db/current/mule-db.xsd">
+ <http:listener-config name="order-experience-api-httpListenerConfig">
+  <http:listener-connection host="0.0.0.0" port="${http.port}"/>
+ </http:listener-config>
+ <apikit:config api="order-experience-api.raml" httpStatusVarName="httpStatus" name="order-experience-api-config" outboundHeadersMapName="outboundHeaders"></apikit:config>
+ <os:object-store config-ref="ObjectStore_Config" doc:id="eeb05f3d-3e5d-428a-a110-9f3ff10edad2" doc:name="Object store" entryTtl="7" expirationIntervalUnit="HOURS" name="Object_store"></os:object-store>
+ <flow name="order-experience-api-main">
+  <http:listener config-ref="order-experience-api-httpListenerConfig" path="/api/*">
+   <http:response statusCode="#[vars.httpStatus default 200]">
+    <http:headers>#[vars.outboundHeaders default {}]</http:headers>
+   </http:response>
+   <http:error-response statusCode="#[vars.httpStatus default 500]">
+    <http:body>#[payload]</http:body>
+    <http:headers>#[vars.outboundHeaders default {}]</http:headers>
+   </http:error-response>
+  </http:listener>
+  <apikit:router config-ref="order-experience-api-config"></apikit:router>
+  <error-handler>
+   <on-error-propagate type="APIKIT:BAD_REQUEST">
+    <set-variable variableName="logEvent" value="#['APIKIT_BAD_REQUEST']" doc:name="logEvent"/>
+    <set-variable variableName="logError" value="#[error]" doc:name="logError"/>
+    <set-variable variableName="logContext" value="#[%dw 2.0
+output application/java
+---
+{}]" doc:name="logContext"/>
+    <flow-ref name="log-error-event-subflow" doc:name="Log APIKIT_BAD_REQUEST"/>
+    <set-variable variableName="errorContext" value="#[{httpStatus: 400, code: 'APIKIT_BAD_REQUEST', message: 'Request failed RAML validation'}]" doc:name="Set errorContext"/>
+    <flow-ref name="build-error-response-subflow" doc:name="Build error response"/>
+    <!-- This one gets an extra `details` object on top of the shared shape -
+         genuinely useful extra info for a RAML validation failure specifically,
+         so it's added after the shared response instead of skipped. -->
+    <ee:transform doc:name="Add validation details">
+     <ee:message>
+      <ee:set-payload><![CDATA[%dw 2.0
+output application/json
+---
+payload ++ {
+  details: {
+    errorType: vars.logError.errorType.identifier default null,
+    description: vars.logError.description default null,
+    detailedDescription: vars.logError.detailedDescription default null
+  }
+}]]></ee:set-payload>
+     </ee:message>
+    </ee:transform>
+   </on-error-propagate>
+   <on-error-propagate type="APIKIT:NOT_FOUND">
+    <set-variable variableName="logEvent" value="#['APIKIT_NOT_FOUND']" doc:name="logEvent"/>
+    <set-variable variableName="logError" value="#[error]" doc:name="logError"/>
+    <set-variable variableName="logContext" value="#[{}]" doc:name="logContext"/>
+    <flow-ref name="log-error-event-subflow" doc:name="Log APIKIT_NOT_FOUND"/>
+    <set-variable variableName="errorContext" value="#[{httpStatus: 404, code: 'NOT_FOUND', message: 'Resource not found'}]" doc:name="Set errorContext"/>
+    <flow-ref name="build-error-response-subflow" doc:name="Build error response"/>
+   </on-error-propagate>
+   <on-error-propagate type="APIKIT:METHOD_NOT_ALLOWED">
+    <set-variable variableName="logEvent" value="#['APIKIT_METHOD_NOT_ALLOWED']" doc:name="logEvent"/>
+    <set-variable variableName="logError" value="#[error]" doc:name="logError"/>
+    <set-variable variableName="logContext" value="#[{}]" doc:name="logContext"/>
+    <flow-ref name="log-error-event-subflow" doc:name="Log APIKIT_METHOD_NOT_ALLOWED"/>
+    <set-variable variableName="errorContext" value="#[{httpStatus: 405, code: 'METHOD_NOT_ALLOWED', message: 'Method not allowed'}]" doc:name="Set errorContext"/>
+    <flow-ref name="build-error-response-subflow" doc:name="Build error response"/>
+   </on-error-propagate>
+   <on-error-propagate type="APIKIT:NOT_ACCEPTABLE">
+    <set-variable variableName="logEvent" value="#['APIKIT_NOT_ACCEPTABLE']" doc:name="logEvent"/>
+    <set-variable variableName="logError" value="#[error]" doc:name="logError"/>
+    <set-variable variableName="logContext" value="#[{}]" doc:name="logContext"/>
+    <flow-ref name="log-error-event-subflow" doc:name="Log APIKIT_NOT_ACCEPTABLE"/>
+    <set-variable variableName="errorContext" value="#[{httpStatus: 406, code: 'NOT_ACCEPTABLE', message: 'Not acceptable'}]" doc:name="Set errorContext"/>
+    <flow-ref name="build-error-response-subflow" doc:name="Build error response"/>
+   </on-error-propagate>
+   <on-error-propagate type="APIKIT:UNSUPPORTED_MEDIA_TYPE">
+    <set-variable variableName="logEvent" value="#['APIKIT_UNSUPPORTED_MEDIA_TYPE']" doc:name="logEvent"/>
+    <set-variable variableName="logError" value="#[error]" doc:name="logError"/>
+    <set-variable variableName="logContext" value="#[{}]" doc:name="logContext"/>
+    <flow-ref name="log-error-event-subflow" doc:name="Log APIKIT_UNSUPPORTED_MEDIA_TYPE"/>
+    <set-variable variableName="errorContext" value="#[{httpStatus: 415, code: 'UNSUPPORTED_MEDIA_TYPE', message: 'Unsupported media type'}]" doc:name="Set errorContext"/>
+    <flow-ref name="build-error-response-subflow" doc:name="Build error response"/>
+   </on-error-propagate>
+   <on-error-propagate type="APIKIT:NOT_IMPLEMENTED">
+    <set-variable variableName="logEvent" value="#['APIKIT_NOT_IMPLEMENTED']" doc:name="logEvent"/>
+    <set-variable variableName="logError" value="#[error]" doc:name="logError"/>
+    <set-variable variableName="logContext" value="#[{}]" doc:name="logContext"/>
+    <flow-ref name="log-error-event-subflow" doc:name="Log APIKIT_NOT_IMPLEMENTED"/>
+    <set-variable variableName="errorContext" value="#[{httpStatus: 501, code: 'NOT_IMPLEMENTED', message: 'Not Implemented'}]" doc:name="Set errorContext"/>
+    <flow-ref name="build-error-response-subflow" doc:name="Build error response"/>
+   </on-error-propagate>
+  </error-handler>
+ </flow>
+ <flow name="post:\orders:application\json:order-experience-api-config">
+  <set-variable doc:id="bf6e4773-2c1b-47bc-9e3e-aabcbad74cfa" doc:name="Set idempotencyKey" value="#[attributes.headers.'idempotency-key']" variableName="idempotencyKey"></set-variable>
+  <set-variable doc:id="22edaf2e-f85c-4114-96ae-f6c6f1803c1d" doc:name="Set externalOrderId" value="#[payload.externalOrderId]" variableName="externalOrderId"></set-variable>
+  <set-variable doc:id="3d3036a5-a682-4df7-81b4-5061ce0bd814" doc:name="Set requestCorrelationId" value="#[correlationId]" variableName="requestCorrelationId"></set-variable>
+  <set-variable doc:name="Set requestStartTime" value="#[now()]" variableName="requestStartTime"></set-variable>
+
+  <set-variable variableName="logEvent" value="#['ORDER_REQUEST_RECEIVED']" doc:name="logEvent"/>
+  <set-variable variableName="logContext" value="#[%dw 2.0
+output application/java
+---
+{
+    idempotencyKey: vars.idempotencyKey,
+    externalOrderId: vars.externalOrderId,
+    orderSource: payload.orderSource
+}]" doc:name="logContext"/>
+  <flow-ref name="log-event-subflow" doc:name="Log ORDER_REQUEST_RECEIVED"/>
+
+  <choice doc:id="bcde5302-5225-4c59-9b90-f2fc21472d32" doc:name="Choice">
+   <when expression="#[payload.pricing.grandTotal !=
+  (
+    (payload.pricing.subtotal default 0)
+    - (payload.pricing.itemDiscountTotal default 0)
+    - (payload.pricing.orderDiscountTotal default 0)
+    + (payload.pricing.shippingAmount default 0)
+    + (payload.pricing.taxAmount default 0)
+  )]">
+    <set-variable doc:id="f0d6df5b-2106-4333-99cf-c5523254cf8c" doc:name="Set errorContext" value="#[{  httpStatus: 400,
+        code: &quot;PRICING_VALIDATION_FAILED&quot;,
+        message: &quot;Pricing mismatch detected&quot;
+    }]" variableName="errorContext"></set-variable>
+    <raise-error description="Pricing mismatch detected" doc:id="f4b30eae-2d81-4854-9884-cf898376884c" doc:name="Raise error" type="ORDER:PRICING_VALIDATION_FAILED"></raise-error>
+   </when>
+   <when expression="#[(payload.payment.paymentMethodType == &quot;CARD&quot; and
+    (payload.payment.paymentToken == null or payload.payment.paymentToken == &quot;&quot;)
+  )
+  or
+  ((payload.payment.authorizedAmount default 0) != (payload.pricing.grandTotal default 0))]">
+    <set-variable doc:id="8fa8fd44-d918-421b-a195-a9d1e47bd90e" doc:name="Set errorContext" value="#[{
+        httpStatus: 422,
+        code: &quot;PAYMENT_VALIDATION_FAILED&quot;,
+        message: &quot;Invalid payment details&quot;
+    }]" variableName="errorContext"></set-variable>
+    <raise-error doc:id="8640b53c-2bb5-4467-91f7-6435b7505131" doc:name="Raise error" type="ORDER:BUSINESS_ERROR"></raise-error>
+   </when>
+   <otherwise>
+    <!-- No raw payload dump here anymore - it would include paymentToken and
+         other sensitive fields unmasked. ORDER_REQUEST_RECEIVED above already
+         logs the safe, specific fields that matter (no payment/PII data). -->
+    <set-variable doc:id="aec67c98-c694-41ab-8c40-3a38ce5996af" doc:name="Set originalOrder" value="#[%dw 2.0
+output application/java
+---
+payload]" variableName="requestPayload"></set-variable>
+    <set-variable doc:id="2ba1909b-90ca-4058-aec7-d7245fd6301b" doc:name="Set requestHash" value="#[%dw 2.0
+import hashWith from dw::Crypto
+import toHex from dw::core::Binaries
+output application/java
+
+var canonicalRequest =
+    vars.requestPayload
+        - &quot;requestTimestamp&quot;
+        - &quot;traceId&quot;
+        - &quot;correlationId&quot;
+
+var canonicalString =
+    write(canonicalRequest, &quot;application/json&quot;, {indent: false})
+
+---
+toHex(
+    hashWith(
+        canonicalString as Binary,
+        &quot;SHA-256&quot;
+    )
+)]" variableName="requestHash"></set-variable>
+    <set-variable doc:id="a440aa55-84d7-40ea-aebd-977ee2d1bd06" doc:name="Set generatedOrderId" value="#[&quot;ORD-&quot; ++ vars.externalOrderId]" variableName="generatedOrderId"></set-variable>
+    <set-variable doc:id="8bd2913b-62a6-4a9b-b037-afcdbf308f88" doc:name="Set outboxStatus" value="#['PENDING']" variableName="outboxStatus"></set-variable>
+    <set-variable doc:id="4b1b526d-33f2-4e6c-b12e-b27411d9f91e" doc:name="Set orderStatus" value="#['RECEIVED']" variableName="orderStatus"></set-variable>
+    <db:select config-ref="Database_Config" doc:id="ab521e9e-2d06-40a2-b117-fc2860dc4f47" doc:name="Select idempotencyRecord" target="idempotencyRecord">
+          <db:sql><![CDATA[SELECT
+    idempotency_key,
+    external_order_id,
+    internal_order_id,
+    request_status,
+    response_code,
+    response_body::text AS response_body,
+    request_hash
+FROM api_idempotency
+WHERE idempotency_key = :idempotencyKey]]></db:sql>
+          <db:input-parameters><![CDATA[#[%dw 2.0
+output application/java
+---
+{
+  idempotencyKey: vars.idempotencyKey
+}]]]></db:input-parameters>
+        </db:select>
+    <choice doc:id="05413f0a-053a-46ed-b46b-daf6aa81b857" doc:name="Choice">
+     <when expression="#[!isEmpty(vars.idempotencyRecord)
+  and vars.idempotencyRecord[0].external_order_id != vars.externalOrderId]">
+      <set-variable doc:id="6048b936-9d32-49de-a756-497f2bca2977" doc:name="Set errorContext" value="#[%dw 2.0
+output application/java
+---
+{
+  httpStatus: 409,
+  code: &quot;IDEMPOTENCY_KEY_CONFLICT&quot;,
+  message: &quot;The idempotency key was already used for a different external order&quot;
+}]" variableName="errorContext"></set-variable>
+      <raise-error description="Idempotency key conflict" doc:id="f7e8f5e3-6b75-440c-b545-dba58eaa61ee" doc:name="Raise error" type="ORDER:IDEMPOTENCY_CONFLICT"></raise-error>
+     </when>
+     <when expression="#[!isEmpty(vars.idempotencyRecord)
+  and vars.idempotencyRecord[0].external_order_id == vars.externalOrderId
+  and vars.idempotencyRecord[0].request_hash != null
+  and vars.idempotencyRecord[0].request_hash != vars.requestHash]">
+      <set-variable doc:id="c486c507-f16e-435e-ab1c-2f60855e9919" doc:name="Set errorContext" value="#[{
+  httpStatus: 409,
+  code: &quot;IDEMPOTENCY_PAYLOAD_CONFLICT&quot;,
+  message: &quot;The idempotency key was reused with a different request payload&quot;
+}]" variableName="errorContext"></set-variable>
+      <raise-error description="Idempotency payload conflict" doc:id="1bfe0054-1a77-42de-9d72-f56917a72b61" doc:name="Raise error" type="ORDER:IDEMPOTENCY_PAYLOAD_CONFLICT"></raise-error>
+     </when>
+     <when expression="#[!isEmpty(vars.idempotencyRecord)
+  and vars.idempotencyRecord[0].request_status == &quot;COMPLETED&quot;]">
+      <ee:transform doc:id="20f926b3-9234-4da4-925e-35acf39c6124" doc:name="Transform Message">
+       <ee:message>
+        <ee:set-payload><![CDATA[%dw 2.0
+output application/json
+---
+read(
+    vars.idempotencyRecord[0].response_body as String,
+    "application/json"
+)]]></ee:set-payload>
+       </ee:message>
+      </ee:transform>
+      <set-variable doc:id="e9d6389f-d587-4d12-9d5e-856612820a33" doc:name="Set httpStatus" value="#[vars.idempotencyRecord[0].response_code default 202]" variableName="httpStatus"></set-variable>
+     </when>
+     <when expression="#[!isEmpty(vars.idempotencyRecord)
+  and vars.idempotencyRecord[0].request_status == &quot;PROCESSING&quot;]">
+      <set-variable doc:id="55cd9cc2-4ec7-48b3-9d21-5dcee1ca0599" doc:name="Set errorContext" value="#[%dw 2.0
+output application/java
+---
+{
+  httpStatus: 409,
+  code: &quot;REQUEST_IN_PROGRESS&quot;,
+  message: &quot;A request with this idempotency key is already being processed&quot;
+}]" variableName="errorContext"></set-variable>
+      <raise-error description="Request already processing" doc:id="7fb543a7-fca1-4df9-a983-1b47c52b5a41" doc:name="Raise error" type="ORDER:REQUEST_IN_PROGRESS"></raise-error>
+     </when>
+     <otherwise>
+      <db:select config-ref="Database_Config" doc:id="ab10e782-d08f-4cd3-8c47-5af2e49eba6b" doc:name="select existingOrder" target="existingOrder">
+              <db:sql><![CDATA[SELECT
+    order_id,
+    external_order_id,
+    order_status
+FROM orders
+WHERE external_order_id = :externalOrderId]]></db:sql>
+              <db:input-parameters><![CDATA[#[%dw 2.0
+output application/java
+---
+{
+  externalOrderId: vars.externalOrderId
+}]]]></db:input-parameters>
+            </db:select>
+      <choice doc:id="764320cb-f103-44bf-a2a6-458200aec343" doc:name="Choice">
+       <when expression="#[!isEmpty(vars.existingOrder)]">
+        <set-variable doc:id="2117eb59-287f-4d58-9289-b8dbbcaa72b3" doc:name="Set errorContext" value="#[%dw 2.0
+output application/java
+---
+{
+  httpStatus: 409,
+  code: &quot;DUPLICATE_ORDER&quot;,
+  message: &quot;An order with this externalOrderId already exists&quot;
+}]" variableName="errorContext"></set-variable>
+        <raise-error description="Order already exists" doc:id="439dabb6-2f7d-4ece-86c5-234701f5ba63" doc:name="Raise error" type="ORDER:DUPLICATE_ORDER"></raise-error>
+       </when>
+       <otherwise>
+        <flow-ref doc:id="e86a7dd0-9f28-4f95-ba36-a1891ac17ef9" doc:name="Persist Order Transactionally" name="persist-order-transactionally-subflow"></flow-ref>
+        <ee:transform doc:id="e888c737-5a6c-4ce0-9a9d-9e88cc59a598" doc:name="Transform Message">
+         <ee:message>
+          <ee:set-payload><![CDATA[%dw 2.0
+output application/json
+---
+vars.successResponse]]></ee:set-payload>
+         </ee:message>
+        </ee:transform>
+        <set-variable doc:id="eecdfd68-a14c-493d-a02f-c210a3d74599" doc:name="Set httpStatus" value="#[202]" variableName="httpStatus"></set-variable>
+       </otherwise>
+      </choice>
+     </otherwise>
+    </choice>
+   </otherwise>
+  </choice>
+  <error-handler>
+   <on-error-continue doc:name="Handle Business Errors" enableNotifications="true" logException="true" type="ORDER:PRICING_VALIDATION_FAILED, ORDER:BUSINESS_ERROR, ORDER:IDEMPOTENCY_CONFLICT, ORDER:REQUEST_IN_PROGRESS, ORDER:DUPLICATE_ORDER, ORDER:IDEMPOTENCY_PAYLOAD_CONFLICT">
+    <set-variable variableName="logEvent" value="#['ORDER_PROCESSING_FAILED']" doc:name="logEvent"/>
+    <set-variable variableName="logError" value="#[error]" doc:name="logError"/>
+    <set-variable variableName="logContext" value="#[%dw 2.0
+output application/java
+---
+{orderId: vars.generatedOrderId default payload.externalOrderId default null}]" doc:name="logContext"/>
+    <flow-ref name="log-error-event-subflow" doc:name="Log ORDER_PROCESSING_FAILED (business)"/>
+    <flow-ref name="build-error-response-subflow" doc:name="Build error response"/>
+   </on-error-continue>
+   <on-error-continue doc:id="ae7c713c-6362-4357-9009-2825bbe06c60" doc:name="Handle Concurrent Duplicate" enableNotifications="true" logException="true" type="DB:QUERY_EXECUTION" when="#[((error.description default '') contains 'duplicate key') or  ((error.detailedDescription default '') contains 'duplicate key')]">
+    <set-variable variableName="logEvent" value="#['ORDER_CONCURRENT_DUPLICATE_DETECTED']" doc:name="logEvent"/>
+    <set-variable variableName="logError" value="#[error]" doc:name="logError"/>
+    <set-variable variableName="logContext" value="#[%dw 2.0
+output application/java
+---
+{orderId: vars.generatedOrderId default null, idempotencyKey: vars.idempotencyKey default null}]" doc:name="logContext"/>
+    <flow-ref name="log-error-event-subflow" doc:name="Log ORDER_CONCURRENT_DUPLICATE_DETECTED"/>
+    <set-variable doc:id="c4e6ce16-8f56-4c5b-b934-96fb4035160e" doc:name="Set errorContext" variableName="errorContext" value="#[%dw 2.0
+output application/java
+
+var errorText =
+    lower(
+        (error.description default '')
+        ++ ' '
+        ++
+        (error.detailedDescription default '')
+    )
+
+---
+if (errorText contains 'api_idempotency')
+{
+    httpStatus: 409,
+    code: 'REQUEST_IN_PROGRESS',
+    message: 'A request with this idempotency key is already being processed'
+}
+else
+{
+    httpStatus: 409,
+    code: 'DUPLICATE_ORDER',
+    message: 'An order with this externalOrderId already exists'
+}]"/>
+    <flow-ref name="build-error-response-subflow" doc:name="Build error response"/>
+   </on-error-continue>
+   <on-error-continue doc:id="f18658f7-e2c4-44fa-9f72-a8b82b426e0a" doc:name="On Error Continue" enableNotifications="true" logException="true" type="ANY">
+    <set-variable variableName="logEvent" value="#['ORDER_PROCESSING_FAILED']" doc:name="logEvent"/>
+    <set-variable variableName="logError" value="#[error]" doc:name="logError"/>
+    <set-variable variableName="logContext" value="#[%dw 2.0
+output application/java
+---
+{orderId: vars.generatedOrderId default payload.externalOrderId default null}]" doc:name="logContext"/>
+    <flow-ref name="log-error-event-subflow" doc:name="Log ORDER_PROCESSING_FAILED (unhandled)"/>
+    <flow-ref name="build-error-response-subflow" doc:name="Build error response"/>
+   </on-error-continue>
+  </error-handler>
+ </flow>
+ <sub-flow doc:id="d6bf697e-773c-4322-bce2-244eb85297d1" name="persist-order-transactionally-subflow">
+  <set-variable doc:id="a8859e62-ff99-4c4b-bea3-add5d38cb8d2" doc:name="Set eventId" value="#[%dw 2.0
+output application/java
+---
+&quot;EVT-&quot; ++ vars.generatedOrderId ++ &quot;-&quot; ++ (now() as String {format: &quot;yyyyMMddHHmmss&quot;})]" variableName="eventId"></set-variable>
+  <try doc:id="25919b56-7b45-4a36-882f-baa8f789ad04" doc:name="Try" transactionalAction="ALWAYS_BEGIN">
+   <set-variable variableName="logEvent" value="#['ORDER_TRANSACTION_STARTED']" doc:name="logEvent"/>
+   <set-variable variableName="logContext" value="#[%dw 2.0
+output application/java
+---
+{
+  orderId: vars.generatedOrderId,
+  eventId: vars.eventId,
+  action: &quot;INSERT_ORDER_AND_OUTBOX_IDEMPOTENCYKEY&quot;
+}]" doc:name="logContext"/>
+   <flow-ref name="log-event-subflow" doc:name="Log ORDER_TRANSACTION_STARTED"/>
+   <db:insert config-ref="Database_Config" doc:id="2add5d5f-15be-4e19-9363-491069e87dcc" doc:name="Insert Idempotency Record" target="idempotencyInsertResult" transactionalAction="ALWAYS_JOIN">
+        <db:sql><![CDATA[INSERT INTO api_idempotency (
+    idempotency_key,
+    external_order_id,
+    internal_order_id,
+    request_hash,
+    request_status
+)
+VALUES (
+    :idempotencyKey,
+    :externalOrderId,
+    :internalOrderId,
+    :requestHash,
+    :requestStatus
+)]]></db:sql>
+        <db:input-parameters><![CDATA[#[%dw 2.0
+output application/java
+---
+{
+  idempotencyKey: vars.idempotencyKey,
+  externalOrderId: vars.externalOrderId,
+  internalOrderId: vars.generatedOrderId,
+  requestHash: vars.requestHash,
+  requestStatus: "PROCESSING"
+}]]]></db:input-parameters>
+      </db:insert>
+   <db:insert config-ref="Database_Config" doc:id="f0bbf388-0a9d-4895-9c62-6e5cb1decd8a" doc:name="Insert Order" transactionalAction="ALWAYS_JOIN">
+        <db:sql><![CDATA[INSERT INTO orders (
+  order_id,
+  external_order_id,
+  order_status,
+  order_payload,
+  correlation_id
+)
+VALUES (
+  :orderId,
+  :externalOrderId,
+  :orderStatus,
+  CAST(:orderPayload AS JSONB),
+  :correlationId
+)]]></db:sql>
+        <db:input-parameters><![CDATA[#[%dw 2.0
+output application/java
+---
+{
+  orderId: vars.generatedOrderId,
+  externalOrderId: vars.externalOrderId,
+  orderStatus: vars.orderStatus,
+  orderPayload: write(vars.requestPayload, "application/json"),
+  correlationId: vars.requestCorrelationId
+}]]]></db:input-parameters>
+      </db:insert>
+   <db:insert config-ref="Database_Config" doc:id="e364220d-22b2-4169-b2bc-53ff7c6ec3fa" doc:name="Insert Outbox Event" transactionalAction="ALWAYS_JOIN">
+        <db:sql><![CDATA[INSERT INTO order_outbox(
+  event_id,
+  event_type,
+  event_version,
+  aggregate_type,
+  aggregate_id,
+  event_payload,
+  event_status,
+  retry_count,
+  correlation_id
+)
+VALUES (
+  :eventId,
+  :eventType,
+  :eventVersion,
+  :aggregateType,
+  :aggregateId,
+  CAST(:eventPayload AS JSONB),
+  :eventStatus,
+  :retryCount,
+  :correlationId
+)]]></db:sql>
+        <db:input-parameters><![CDATA[#[%dw 2.0
+output application/java
+---
+{
+  eventId: vars.eventId,
+  eventType: "ORDER_CREATED",
+  eventVersion: "1.0",
+  aggregateType: "ORDER",
+  aggregateId: vars.generatedOrderId,
+  eventPayload: write({
+    eventId: vars.eventId,
+    eventType: "ORDER_CREATED",
+    eventVersion: "1.0",
+    orderId: vars.generatedOrderId,
+    correlationId: vars.requestCorrelationId,
+    sourceSystem: "order-experience-api",
+    createdAt: now()
+  }, "application/json"),
+  eventStatus: vars.outboxStatus,
+  retryCount: 0,
+  correlationId: vars.requestCorrelationId
+}]]]></db:input-parameters>
+      </db:insert>
+   <set-variable doc:id="81aeab39-14a9-459a-9584-572a7c3687b8" doc:name="Set successResponse" value="#[%dw 2.0
+output application/java
+---
+{
+  status: &quot;ACCEPTED&quot;,
+  code: &quot;ORDER_ACCEPTED&quot;,
+  message: &quot;Order and outbox event persisted successfully&quot;,
+  orderId: vars.generatedOrderId,
+  externalOrderId: vars.externalOrderId,
+  correlationId: vars.requestCorrelationId,
+  data: {
+    orderStatus: vars.orderStatus,
+    outboxStatus: vars.outboxStatus,
+    eventId: vars.eventId
+  }
+}]" variableName="successResponse"></set-variable>
+   <db:update config-ref="Database_Config" doc:id="c6942c22-e376-4b9f-afdd-fa891aff5cb2" doc:name="Update" transactionalAction="ALWAYS_JOIN">
+        <db:sql><![CDATA[UPDATE api_idempotency
+SET
+    request_status = :requestStatus,
+    response_code = :responseCode,
+    response_body = CAST(:responseBody AS JSONB),
+    updated_at = CURRENT_TIMESTAMP
+WHERE idempotency_key = :idempotencyKey]]></db:sql>
+        <db:input-parameters><![CDATA[#[%dw 2.0
+output application/java
+---
+{
+  requestStatus: "COMPLETED",
+  responseCode: 202,
+  responseBody: write(vars.successResponse, "application/json"),
+  idempotencyKey: vars.idempotencyKey
+}]]]></db:input-parameters>
+      </db:update>
+   <error-handler>
+    <on-error-propagate doc:id="754bba32-9c44-4da2-9fbc-286555f3b68d" doc:name="On Error Propagate" enableNotifications="true" logException="true">
+     <set-variable variableName="logEvent" value="#['ORDER_OUTBOX_TRANSACTION_FAILED']" doc:name="logEvent"/>
+     <set-variable variableName="logError" value="#[error]" doc:name="logError"/>
+     <set-variable variableName="logContext" value="#[%dw 2.0
+output application/java
+---
+{
+  orderId: vars.generatedOrderId default null,
+  eventId: vars.eventId default null,
+  message: &quot;Order and outbox transaction failed and will be rolled back&quot;
+}]" doc:name="logContext"/>
+     <flow-ref name="log-error-event-subflow" doc:name="Log ORDER_OUTBOX_TRANSACTION_FAILED"/>
+    </on-error-propagate>
+   </error-handler>
+  </try>
+  <set-variable variableName="logEvent" value="#['ORDER_OUTBOX_TRANSACTION_COMMITTED']" doc:name="logEvent"/>
+  <set-variable variableName="logContext" value="#[%dw 2.0
+output application/java
+---
+{
+  orderId: vars.generatedOrderId,
+  eventId: vars.eventId,
+  orderStatus: &quot;RECEIVED&quot;,
+  outboxStatus: &quot;PENDING&quot;,
+  message: &quot;Order and outbox event committed successfully&quot;
+}]" doc:name="logContext"/>
+  <flow-ref name="log-event-subflow" doc:name="Log ORDER_OUTBOX_TRANSACTION_COMMITTED"/>
+ </sub-flow>
+</mule>

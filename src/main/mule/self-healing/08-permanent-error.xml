@@ -1,0 +1,37 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<mule xmlns="http://www.mulesoft.org/schema/mule/core" xmlns:doc="http://www.mulesoft.org/schema/mule/documentation" xmlns:ee="http://www.mulesoft.org/schema/mule/ee/core" xmlns:http="http://www.mulesoft.org/schema/mule/http" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://www.mulesoft.org/schema/mule/core http://www.mulesoft.org/schema/mule/core/current/mule.xsd http://www.mulesoft.org/schema/mule/ee/core http://www.mulesoft.org/schema/mule/ee/core/current/mule-ee.xsd http://www.mulesoft.org/schema/mule/http http://www.mulesoft.org/schema/mule/http/current/mule-http.xsd">
+	<!--
+		Clean answer for permanent errors. Wraps the verified backoff flow (04) without editing it.
+		Without this, a 400/404/401/403 from inventory reaches the caller as a raw plain-text 500 that leaks the internal URL.
+		Here those four errors become a clean JSON 502 (Bad Gateway: our downstream rejected the request, not retried).
+		Every other result (SUCCESS, RETRY_EXHAUSTED 503) comes back from the wrapped flow unchanged.
+		GET /self-healing/backoff-safe?sku=...
+	-->
+	<flow name="self-healing-backoff-safe-flow">
+		<http:listener config-ref="order-experience-api-httpListenerConfig" path="/self-healing/backoff-safe">
+			<http:response statusCode="#[vars.httpStatus default 200]" />
+		</http:listener>
+		<try>
+			<flow-ref name="self-healing-backoff-retry-flow" />
+			<error-handler>
+				<on-error-continue type="HTTP:BAD_REQUEST, HTTP:NOT_FOUND, HTTP:UNAUTHORIZED, HTTP:FORBIDDEN">
+					<ee:transform doc:name="Permanent error response">
+						<ee:message>
+							<ee:set-payload><![CDATA[%dw 2.0
+output application/json
+---
+{
+  outcome: "FAILED_NOT_RETRIED",
+  message: "Inventory rejected the request, not retried",
+  idempotencyKey: vars.idemKey
+}]]></ee:set-payload>
+						</ee:message>
+						<ee:variables>
+							<ee:set-variable variableName="httpStatus"><![CDATA[502]]></ee:set-variable>
+						</ee:variables>
+					</ee:transform>
+				</on-error-continue>
+			</error-handler>
+		</try>
+	</flow>
+</mule>

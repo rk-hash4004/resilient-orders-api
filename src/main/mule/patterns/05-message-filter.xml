@@ -1,0 +1,25 @@
+<mule xmlns="http://www.mulesoft.org/schema/mule/core" xmlns:doc="http://www.mulesoft.org/schema/mule/documentation" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+	xmlns:http="http://www.mulesoft.org/schema/mule/http"
+	xmlns:validation="http://www.mulesoft.org/schema/mule/validation" xsi:schemaLocation="http://www.mulesoft.org/schema/mule/core http://www.mulesoft.org/schema/mule/core/current/mule.xsd
+	http://www.mulesoft.org/schema/mule/http http://www.mulesoft.org/schema/mule/http/current/mule-http.xsd
+	http://www.mulesoft.org/schema/mule/validation http://www.mulesoft.org/schema/mule/validation/current/mule-validation.xsd">
+    <flow name="patterns-message-filter-flow">
+        <http:listener doc:name="Listener" doc:id="grsgqr" path="/patterns/message-filter" config-ref="order-experience-api-httpListenerConfig"/>
+        <set-payload doc:name="Set payload" doc:id="crdbvt" value='#[%dw 2.0
+output application/json
+---
+{orderId: "ORD-3001", total: -5}]'/>
+    <validation:all doc:name="All" doc:id="ayeylz">
+      <validation:is-not-null doc:name="Is not null" doc:id="rmdwzs" value="#[payload.orderId]" message="#['orderId is required']"/>
+      <validation:matches-regex doc:name="Matches regex" doc:id="eafvmn" value="#[payload.orderId as String default '']" regex="#['ORD-\d+']" message="#['orderId must match ORD-&lt;digits&gt;']"/>
+      <validation:is-true doc:name="Is true" doc:id="failnl" message="#['total below minimum']" expression="#[payload.total &gt;= 10]"/>
+        
+    </validation:all>
+        <error-handler>
+            <on-error-continue >
+                <logger doc:name="Logger" doc:id="ahhlnd" message="#[output application/java --- 'Caught: ' ++ error.errorType.namespace ++ ':' ++ error.errorType.identifier ++ ' | ' ++ error.description]"/>
+                <set-payload doc:name="Set payload" doc:id="begyvk" value="#[%dw 2.0 output application/json --- { status: 'filtered', reason: error.description }]"/>
+                
+            </on-error-continue>
+        </error-handler></flow>
+</mule>

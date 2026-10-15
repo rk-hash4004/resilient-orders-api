@@ -1,0 +1,7 @@
+{
+  "orderId": "ORD-20260407-0001",
+  "status": "ACCEPTED",
+  "message": "Order received successfully",
+  "correlationId": "8f1d7d90-8b5e-4b18-9e1d-123456789abc",
+  "acceptedTime": "2026-04-07T10:15:35Z"
+}

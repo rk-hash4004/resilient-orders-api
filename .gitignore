@@ -1,0 +1,28 @@
+target/
+.mule/
+.studio/
+.settings/
+.classpath
+.project
+.tooling-project
+.vscode/
+.idea/
+*.iml
+.DS_Store
+*.log
+*.tmp
+node_modules/
+
+# Secrets and TLS material: never commit
+*.p12
+*.key
+*.pem
+*.csr
+*.crt
+src/main/resources/tls/
+src/main/resources/config/secure-*.yaml
+!src/main/resources/config/secure-example.yaml
+secure*.yaml
+
+# DataWeave playground scratch
+src/test/resources/embedded-dw_*/

@@ -1,0 +1,93 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<mule xmlns="http://www.mulesoft.org/schema/mule/core" xmlns:doc="http://www.mulesoft.org/schema/mule/documentation" xmlns:ee="http://www.mulesoft.org/schema/mule/ee/core" xmlns:http="http://www.mulesoft.org/schema/mule/http" xmlns:os="http://www.mulesoft.org/schema/mule/os" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://www.mulesoft.org/schema/mule/core http://www.mulesoft.org/schema/mule/core/current/mule.xsd http://www.mulesoft.org/schema/mule/ee/core http://www.mulesoft.org/schema/mule/ee/core/current/mule-ee.xsd http://www.mulesoft.org/schema/mule/http http://www.mulesoft.org/schema/mule/http/current/mule-http.xsd http://www.mulesoft.org/schema/mule/os http://www.mulesoft.org/schema/mule/os/current/mule-os.xsd">
+	<!--
+		MOCK DOWNSTREAM: stands in for a real system (inventory, payment, ERP).
+		It is genuinely UP or DOWN. You flip it with a curl, like a real outage.
+		  GET /mock/inventory/down   -> every call returns 503
+		  GET /mock/inventory/up     -> works again
+		  GET /mock/inventory/reserve?sku=TILE-1   (header X-Idempotency-Key)
+		    503 when down, 400 when sku is empty, otherwise creates a reservation.
+		    Same X-Idempotency-Key twice = the SAME reservation back, replayed:true (no duplicate).
+	-->
+	<flow name="self-healing-mock-down">
+		<http:listener config-ref="order-experience-api-httpListenerConfig" path="/mock/inventory/down" allowedMethods="GET" />
+		<os:store key="mock-switch" objectStore="SelfHealing_Store">
+			<os:value>#["DOWN"]</os:value>
+		</os:store>
+		<set-payload value='#[output application/json --- { inventory: "DOWN" }]' />
+	</flow>
+
+	<flow name="self-healing-mock-up">
+		<http:listener config-ref="order-experience-api-httpListenerConfig" path="/mock/inventory/up" allowedMethods="GET" />
+		<os:store key="mock-switch" objectStore="SelfHealing_Store">
+			<os:value>#["UP"]</os:value>
+		</os:store>
+		<set-payload value='#[output application/json --- { inventory: "UP" }]' />
+	</flow>
+
+	<flow name="self-healing-mock-slow">
+		<http:listener config-ref="order-experience-api-httpListenerConfig" path="/mock/inventory/slow" allowedMethods="GET" />
+		<os:store key="mock-switch" objectStore="SelfHealing_Store">
+			<os:value>#["SLOW"]</os:value>
+		</os:store>
+		<set-payload value='#[output application/json --- { inventory: "SLOW" }]' />
+	</flow>
+
+	<flow name="self-healing-mock-reserve">
+		<http:listener config-ref="order-experience-api-httpListenerConfig" path="/mock/inventory/reserve" allowedMethods="GET">
+			<http:response statusCode="#[vars.httpStatus default 200]" />
+		</http:listener>
+		<os:retrieve key="mock-switch" objectStore="SelfHealing_Store" target="switch">
+			<os:default-value>#["UP"]</os:default-value>
+		</os:retrieve>
+		<!-- SLOW mode: answer after 3 s, longer than the caller's 2 s responseTimeout, so the caller times out -->
+		<choice>
+			<when expression="#[vars.switch == 'SLOW']">
+				<ee:transform>
+					<ee:message>
+						<ee:set-payload><![CDATA[%dw 2.0
+import wait from dw::Runtime
+output application/json
+---
+wait(payload, 3000)]]></ee:set-payload>
+					</ee:message>
+				</ee:transform>
+			</when>
+		</choice>
+		<choice>
+			<when expression="#[vars.switch == 'DOWN']">
+				<set-variable variableName="httpStatus" value="#[503]" />
+				<set-payload value='#[output application/json --- { error: "SERVICE_UNAVAILABLE" }]' />
+			</when>
+			<when expression="#[isEmpty(attributes.queryParams.sku)]">
+				<set-variable variableName="httpStatus" value="#[400]" />
+				<set-payload value='#[output application/json --- { error: "sku is required" }]' />
+			</when>
+			<otherwise>
+				<set-variable variableName="idem" value="#[attributes.headers.'x-idempotency-key' default '']" />
+				<set-variable variableName="seenBefore" value="#[false]" />
+				<choice>
+					<when expression="#[vars.idem != '']">
+						<os:contains key="#['idem-' ++ vars.idem]" objectStore="SelfHealing_Store" target="seenBefore" />
+					</when>
+				</choice>
+				<choice>
+					<when expression="#[vars.seenBefore]">
+						<os:retrieve key="#['idem-' ++ vars.idem]" objectStore="SelfHealing_Store" target="seen" />
+						<set-payload value='#[output application/json --- vars.seen ++ { replayed: true }]' />
+					</when>
+					<otherwise>
+						<set-payload value='#[output application/json --- { reservationId: uuid(), sku: attributes.queryParams.sku, replayed: false }]' />
+						<choice>
+							<when expression="#[vars.idem != '']">
+								<os:store key="#['idem-' ++ vars.idem]" objectStore="SelfHealing_Store">
+									<os:value>#[{ reservationId: payload.reservationId, sku: payload.sku }]</os:value>
+								</os:store>
+							</when>
+						</choice>
+					</otherwise>
+				</choice>
+			</otherwise>
+		</choice>
+	</flow>
+</mule>

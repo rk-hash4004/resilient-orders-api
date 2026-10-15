@@ -1,0 +1,73 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<mule xmlns="http://www.mulesoft.org/schema/mule/core" xmlns:db="http://www.mulesoft.org/schema/mule/db" xmlns:doc="http://www.mulesoft.org/schema/mule/documentation" xmlns:ee="http://www.mulesoft.org/schema/mule/ee/core" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://www.mulesoft.org/schema/mule/core http://www.mulesoft.org/schema/mule/core/current/mule.xsd http://www.mulesoft.org/schema/mule/db http://www.mulesoft.org/schema/mule/db/current/mule-db.xsd http://www.mulesoft.org/schema/mule/ee/core http://www.mulesoft.org/schema/mule/ee/core/current/mule-ee.xsd">
+	<!--
+		OUTBOX RELAY. The order flow already writes an ORDER_CREATED row (PENDING) into order_outbox in the same transaction as the order.
+		This flow is the second half: it publishes those rows to the downstream, then marks them.
+		  every 5 s: select up to 10 PENDING rows (oldest first)
+		  for each row: call inventory with X-Idempotency-Key = event_id (a STABLE key, so a repeat publish is recognised)
+		    success            -> PUBLISHED
+		    temporary failure  -> retry_count + 1, last_error saved, stays PENDING (FAILED once retry_count reaches 5)
+		    permanent failure  -> FAILED at once (not retried)
+		Delivery is at-least-once: if the app dies after the call but before the mark, the row is sent again.
+		The same event_id key makes that repeat harmless at the downstream.
+	-->
+	<flow name="self-healing-outbox-relay-flow">
+		<scheduler disallowConcurrentExecution="true">
+			<scheduling-strategy>
+				<fixed-frequency frequency="5" timeUnit="SECONDS" />
+			</scheduling-strategy>
+		</scheduler>
+		<db:select config-ref="Database_Config" doc:name="Select PENDING events">
+			<db:sql><![CDATA[SELECT o.event_id,
+       o.retry_count,
+       ord.order_payload->'items'->0->>'sku' AS sku
+FROM order_outbox o
+JOIN orders ord ON ord.order_id = o.aggregate_id
+WHERE o.event_status = 'PENDING'
+ORDER BY o.created_at
+LIMIT 10]]></db:sql>
+		</db:select>
+		<foreach>
+			<set-variable variableName="eventId" value="#[payload.event_id]" />
+			<set-variable variableName="retryCount" value="#[payload.retry_count]" />
+			<set-variable variableName="sku" value="#[payload.sku]" />
+			<set-variable variableName="idemKey" value="#[payload.event_id]" />
+			<flow-ref name="self-healing-outbox-publish-one" />
+		</foreach>
+	</flow>
+
+	<flow name="self-healing-outbox-publish-one">
+		<try>
+			<flow-ref name="self-healing-call-inventory" />
+			<db:update config-ref="Database_Config" doc:name="Mark PUBLISHED">
+				<db:sql><![CDATA[UPDATE order_outbox
+SET event_status = 'PUBLISHED', processed_at = CURRENT_TIMESTAMP
+WHERE event_id = :eventId]]></db:sql>
+				<db:input-parameters><![CDATA[#[{ eventId: vars.eventId }]]]></db:input-parameters>
+			</db:update>
+			<logger level="INFO" message="#['outbox event PUBLISHED: ' ++ vars.eventId]" />
+			<error-handler>
+				<on-error-continue type="HTTP:SERVICE_UNAVAILABLE, HTTP:TIMEOUT, HTTP:CONNECTIVITY, HTTP:INTERNAL_SERVER_ERROR, HTTP:TOO_MANY_REQUESTS">
+					<db:update config-ref="Database_Config" doc:name="Count failure, FAILED at limit">
+						<db:sql><![CDATA[UPDATE order_outbox
+SET retry_count = retry_count + 1,
+    last_error = :lastError,
+    event_status = CASE WHEN retry_count + 1 >= 5 THEN 'FAILED' ELSE 'PENDING' END
+WHERE event_id = :eventId]]></db:sql>
+						<db:input-parameters><![CDATA[#[{ eventId: vars.eventId, lastError: error.description }]]]></db:input-parameters>
+					</db:update>
+					<logger level="WARN" message="#['outbox publish failed, will retry: ' ++ vars.eventId ++ ' (' ++ error.errorType.identifier ++ ')']" />
+				</on-error-continue>
+				<on-error-continue type="HTTP:BAD_REQUEST, HTTP:NOT_FOUND, HTTP:UNAUTHORIZED, HTTP:FORBIDDEN">
+					<db:update config-ref="Database_Config" doc:name="Mark FAILED (permanent)">
+						<db:sql><![CDATA[UPDATE order_outbox
+SET retry_count = retry_count + 1, last_error = :lastError, event_status = 'FAILED'
+WHERE event_id = :eventId]]></db:sql>
+						<db:input-parameters><![CDATA[#[{ eventId: vars.eventId, lastError: error.description }]]]></db:input-parameters>
+					</db:update>
+					<logger level="ERROR" message="#['outbox event FAILED (permanent): ' ++ vars.eventId]" />
+				</on-error-continue>
+			</error-handler>
+		</try>
+	</flow>
+</mule>

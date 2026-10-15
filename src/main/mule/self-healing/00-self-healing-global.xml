@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<mule xmlns="http://www.mulesoft.org/schema/mule/core" xmlns:ee="http://www.mulesoft.org/schema/mule/ee/core" xmlns:http="http://www.mulesoft.org/schema/mule/http" xmlns:os="http://www.mulesoft.org/schema/mule/os" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://www.mulesoft.org/schema/mule/core http://www.mulesoft.org/schema/mule/core/current/mule.xsd http://www.mulesoft.org/schema/mule/ee/core http://www.mulesoft.org/schema/mule/ee/core/current/mule-ee.xsd http://www.mulesoft.org/schema/mule/http http://www.mulesoft.org/schema/mule/http/current/mule-http.xsd http://www.mulesoft.org/schema/mule/os http://www.mulesoft.org/schema/mule/os/current/mule-os.xsd">
+	<!-- Stores the mock downstream's up/down switch, its processed idempotency keys, and the retry-queue tasks. In memory only. -->
+	<os:object-store name="SelfHealing_Store" persistent="false" entryTtl="1" entryTtlUnit="HOURS" />
+	<!-- The "client" side: our app calling the downstream over real HTTP. -->
+	<http:request-config name="SelfHealing_Downstream">
+		<http:request-connection host="localhost" port="${http.port}" />
+	</http:request-config>
+</mule>

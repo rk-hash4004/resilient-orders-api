@@ -1,0 +1,25 @@
+#%RAML 1.0 Library
+
+types:
+  OrderResponse:
+    type: object
+    additionalProperties: false
+    properties:
+      orderId: string
+      status:
+        type: string
+        enum: [ACCEPTED]
+      message: string
+      correlationId: string
+      acceptedTime: datetime
+
+  ErrorResponse:
+    type: object
+    additionalProperties: false
+    properties:
+      code: string
+      message: string
+      correlationId?: string
+      details?:
+        type: array
+        items: string

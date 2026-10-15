@@ -1,0 +1,103 @@
+#%RAML 1.0 Library
+
+types:
+  Customer:
+    type: object
+    additionalProperties: false
+    properties:
+      customerId?: string
+      customerType:
+        type: string
+        enum: [REGISTERED, GUEST]
+      email: string
+      firstName: string
+      lastName: string
+      phone?: string
+
+  Address:
+    type: object
+    additionalProperties: false
+    properties:
+      name: string
+      addressLine1: string
+      addressLine2?: string
+      city: string
+      state: string
+      postalCode: string
+      country: string
+
+  OrderItem:
+    type: object
+    additionalProperties: false
+    properties:
+      lineNumber: integer
+      sellerId?: string
+      productId: string
+      sku: string
+      productName?: string
+      quantity:
+        type: integer
+        minimum: 1
+      unitPrice:
+        type: number
+        minimum: 0
+      listPrice?:
+        type: number
+        minimum: 0
+      itemDiscount?:
+        type: number
+        minimum: 0
+      taxAmount?:
+        type: number
+        minimum: 0
+      currency: string
+      fulfillmentType:
+        type: string
+        enum: [SHIP, PICKUP, DIGITAL]
+
+  Pricing:
+    type: object
+    additionalProperties: false
+    properties:
+      subtotal:
+        type: number
+        minimum: 0
+      itemDiscountTotal?:
+        type: number
+        minimum: 0
+      shippingAmount?:
+        type: number
+        minimum: 0
+      taxAmount?:
+        type: number
+        minimum: 0
+      orderDiscountTotal?:
+        type: number
+        minimum: 0
+      grandTotal:
+        type: number
+        minimum: 0
+      currency: string
+
+  Delivery:
+    type: object
+    additionalProperties: false
+    properties:
+      deliveryOption:
+        type: string
+        enum: [STANDARD, EXPEDITED, SAME_DAY, PICKUP]
+      deliveryInstructions?: string
+
+  Payment:
+    type: object
+    additionalProperties: false
+    properties:
+      paymentMethodType:
+        type: string
+        enum: [CARD, WALLET, GIFT_CARD, COD]
+      paymentToken?: string
+      paymentProvider?: string
+      authorizedAmount:
+        type: number
+        minimum: 0
+      currency: string

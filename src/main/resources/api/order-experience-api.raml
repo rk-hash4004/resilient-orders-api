@@ -1,0 +1,73 @@
+#%RAML 1.0
+title: Order Experience API
+version: v1
+baseUri: /api/v1
+mediaType: application/json
+protocols: 
+  - https
+
+uses:
+  common-Types: /libraries/common-types.raml
+  orderTypes: /libraries/order-types.raml
+  responseTypes: /libraries/response-types.raml
+
+/orders:
+  post:
+    description: Accept a customer order for processing
+    headers:
+      Idempotency-Key:
+        type: string
+        required: true
+        minLength: 10
+        maxLength: 100
+        description: >
+          Unique identifier for this order submission.
+          The same value must be reused when retrying the same request.
+        example: WEB-20260720-10001
+      X-Correlation-ID:
+        type: string
+        required: false
+        maxLength: 100
+        description: Optional identifier used to trace the request across systems.
+        example: CORR-10001
+    body:
+      application/json:
+        type: orderTypes.OrderRequest
+        example: !include examples/order-request-example.json
+    responses:
+      202:
+        headers:
+          Location:
+            type: string
+            required: true
+            example: /api/v1/orders/ORD-90001
+
+          X-Correlation-ID:
+            type: string
+            required: true
+            example: CORR-10001
+        body:
+          application/json:
+            type: responseTypes.OrderResponse
+            example: !include examples/order-response-202-example.json
+      400:
+        body:
+          application/json:
+            type: responseTypes.ErrorResponse
+            example: !include examples/error-response-400-example.json
+      409:
+        description: >
+          The idempotency key was reused with different request data, or the
+          external order already exists.
+        body:
+          application/json:
+            type: responseTypes.ErrorResponse
+      500:
+        body:
+          application/json:
+            type: responseTypes.ErrorResponse
+      503:
+        description: A required service is temporarily unavailable.
+        body:
+          application/json:
+            type: responseTypes.ErrorResponse

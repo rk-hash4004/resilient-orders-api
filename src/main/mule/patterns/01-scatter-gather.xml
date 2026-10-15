@@ -1,0 +1,69 @@
+<mule xmlns="http://www.mulesoft.org/schema/mule/core" xmlns:doc="http://www.mulesoft.org/schema/mule/documentation" xmlns:ee="http://www.mulesoft.org/schema/mule/ee/core" xmlns:http="http://www.mulesoft.org/schema/mule/http" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="         http://www.mulesoft.org/schema/mule/core http://www.mulesoft.org/schema/mule/core/current/mule.xsd         http://www.mulesoft.org/schema/mule/http http://www.mulesoft.org/schema/mule/http/current/mule-http.xsd         http://www.mulesoft.org/schema/mule/ee/core http://www.mulesoft.org/schema/mule/ee/core/current/mule-ee.xsd">
+  <!-- Lab 1: Scatter-Gather enrichment -->
+  <flow name="patterns-scatter-gather-flow">
+    <http:listener config-ref="order-experience-api-httpListenerConfig" doc:id="ejmbxt" doc:name="Listener" path="/patterns/enrich"></http:listener>
+    <set-payload doc:id="mecbbx" doc:name="Set payload" value="#[%dw 2.0 output application/json --- { orderId: &quot;ORD-1001&quot;, customerId: &quot;CUST-1&quot;, sku: &quot;SKU-9&quot; }]"></set-payload>
+    <set-variable doc:id="wrhokg" doc:name="Set variable" value="#[payload]" variableName="originalOrder"></set-variable>
+    <scatter-gather doc:id="ymldge" doc:name="Scatter gather">
+      <route doc:name="Route">
+        <set-payload doc:id="xovjkp" doc:name="Set payload" value="#[%dw 2.0 output application/json --- { customerName: &quot;John Doe&quot;, tier: &quot;GOLD&quot; }]"></set-payload>
+      </route>
+      <route doc:name="Route">
+        <try doc:id="frbkgw" doc:name="Try">
+          <set-payload doc:id="jpkbty" doc:name="Set payload" value="#[%dw 2.0 output application/json --- { sku: &quot;SKU-9&quot;, available: true, warehouse: &quot;DAL-1&quot; }]"></set-payload>
+          <raise-error description="Inventory service is down" doc:id="mjczyr" doc:name="Raise error" type="APP:BOOM"></raise-error>
+          <error-handler>
+            <on-error-continue doc:id="invonerr" doc:name="On Error Continue" type="APP:BOOM">
+              <set-payload doc:id="invfallback" doc:name="Inventory fallback" value="#[%dw 2.0 output application/json --- { available: false, error: error.description default &quot;Inventory service unavailable&quot; }]"></set-payload>
+            </on-error-continue>
+          </error-handler>
+        </try>
+      </route>
+      <route doc:name="Route">
+        <set-payload doc:id="vsncvn" doc:name="Set payload" value="#[%dw 2.0 output application/json --- { method: &quot;STANDARD&quot;, etaDays: 3 }]"></set-payload>
+      </route>
+    </scatter-gather>
+    <ee:transform doc:id="cpkuoy" doc:name="Transform Message">
+      <ee:message>
+        <ee:set-payload doc:id="vopegc" doc:name="Set payload"><![CDATA[%dw 2.0
+output application/json
+---
+vars.originalOrder ++ {
+  customer:  payload[0].payload,
+  inventory: payload[1].payload,
+  shipping:  payload[2].payload
+}]]></ee:set-payload>
+      </ee:message>
+    </ee:transform>
+  </flow>
+  <flow name="patterns-scatter-gather-experiments-flow">
+    <http:listener config-ref="order-experience-api-httpListenerConfig" doc:id="sge-listener" doc:name="Listener" path="/patterns/enrich-experiments"></http:listener>
+    <set-payload doc:name="Set payload" doc:id="xmslrr" value='#[%dw 2.0 output application/json --- { orderId: "ORD-1001", customerId: "CUST-1", sku: "SKU-9" }]'/>
+    <scatter-gather doc:name="Scatter gather" doc:id="vtmsxx">
+    <route doc:name="Customer">
+        <set-variable doc:name="hit = customer" doc:id="sge-hc" variableName="hit" value="customer"/>
+        <set-payload doc:name="Customer" doc:id="sge-pc" value='#[%dw 2.0 output application/json --- { customerName: "John Doe", tier: "GOLD" }]'/>
+    </route>
+    <route doc:name="Inventory">
+        <set-variable doc:name="hit = inventory" doc:id="sge-hi" variableName="hit" value="inventory"/>
+        <set-payload doc:name="Inventory" doc:id="sge-pi" value='#[%dw 2.0 output application/json --- { available: true, warehouse: "DAL-1" }]'/>
+    </route>
+    <route doc:name="Shipping">
+        <set-variable doc:name="hit = shipping" doc:id="sge-hs" variableName="hit" value="shipping"/>
+        <set-payload doc:name="Shipping" doc:id="sge-ps" value='#[%dw 2.0 output application/json --- { method: "STANDARD", etaDays: 3 }]'/>
+    </route>
+    </scatter-gather>
+    <ee:transform doc:name="Transform Message" doc:id="bruiwi" >
+      <ee:message >
+        <ee:set-payload doc:name="Set payload" doc:id="ahbnvp" ><![CDATA[%dw 2.0
+output application/json
+---
+{
+  payloadUntouched: payload,
+  varHitIsAList:    vars.hit,
+  aggregatedInVar:  vars.enrichment
+}]]></ee:set-payload>
+      </ee:message>
+    </ee:transform>
+  </flow>
+</mule>

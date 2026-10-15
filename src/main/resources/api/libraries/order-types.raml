@@ -1,0 +1,55 @@
+#%RAML 1.0 Library
+
+uses:
+  commonTypes: common-types.raml
+
+types:
+  Promotion:
+    type: object
+    additionalProperties: false
+    properties:
+      code: string
+      type:
+        type: string
+        enum: [ITEM, ORDER, SHIPPING]
+      amount:
+        type: number
+        minimum: 0
+
+  OrderAttributes:
+    type: object
+    additionalProperties: true
+    properties:
+      gift?: boolean
+      giftMessage?: string
+      customerNotes?: string
+
+  OrderRequest:
+    type: object
+    additionalProperties: false
+    properties:
+      externalOrderId:
+        type: string
+        minLength: 1
+        maxLength: 100
+        description: Order identifier assigned by the calling system.
+        example: WEB-20260719-10001
+      orderSource:
+        type: string
+        enum: [WEB, MOBILE, MARKETPLACE, CALL_CENTER]
+      marketplace?: string
+      requestTime: datetime
+      customer: commonTypes.Customer
+      items:
+        type: array
+        minItems: 1
+        items: commonTypes.OrderItem
+      pricing: commonTypes.Pricing
+      shippingAddress: commonTypes.Address
+      billingAddress: commonTypes.Address
+      delivery: commonTypes.Delivery
+      payment: commonTypes.Payment
+      promotions?:
+        type: array
+        items: Promotion
+      orderAttributes?: OrderAttributes

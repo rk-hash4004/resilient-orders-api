@@ -1,0 +1,149 @@
+<?xml version="1.0" encoding="UTF-8"?>
+
+<mule xmlns:kafka="http://www.mulesoft.org/schema/mule/kafka" xmlns:db="http://www.mulesoft.org/schema/mule/db" xmlns:secure-properties="http://www.mulesoft.org/schema/mule/secure-properties" xmlns:os="http://www.mulesoft.org/schema/mule/os" xmlns:sqs="http://www.mulesoft.org/schema/mule/sqs" xmlns:s3="http://www.mulesoft.org/schema/mule/s3" xmlns:api-gateway="http://www.mulesoft.org/schema/mule/api-gateway" xmlns:ee="http://www.mulesoft.org/schema/mule/ee/core" xmlns="http://www.mulesoft.org/schema/mule/core" xmlns:doc="http://www.mulesoft.org/schema/mule/documentation" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://www.mulesoft.org/schema/mule/core http://www.mulesoft.org/schema/mule/core/current/mule.xsd
+http://www.mulesoft.org/schema/mule/s3 http://www.mulesoft.org/schema/mule/s3/current/mule-s3.xsd
+http://www.mulesoft.org/schema/mule/sqs http://www.mulesoft.org/schema/mule/sqs/current/mule-sqs.xsd
+http://www.mulesoft.org/schema/mule/os http://www.mulesoft.org/schema/mule/os/current/mule-os.xsd
+http://www.mulesoft.org/schema/mule/secure-properties http://www.mulesoft.org/schema/mule/secure-properties/current/mule-secure-properties.xsd
+http://www.mulesoft.org/schema/mule/db http://www.mulesoft.org/schema/mule/db/current/mule-db.xsd
+http://www.mulesoft.org/schema/mule/kafka http://www.mulesoft.org/schema/mule/kafka/current/mule-kafka.xsd
+http://www.mulesoft.org/schema/mule/api-gateway http://www.mulesoft.org/schema/mule/api-gateway/current/mule-api-gateway.xsd
+http://www.mulesoft.org/schema/mule/ee/core http://www.mulesoft.org/schema/mule/ee/core/current/mule-ee.xsd">
+
+	<!--
+		Application-wide default error handler - confirmed via the actual
+		Mule 4.12.3 runtime bytecode (DefaultErrorHandlerPointsToExistingErrorHandler),
+		not guessed: <configuration defaultErrorHandler-ref="..."/> applies the
+		named error-handler below to ANY flow in the app that doesn't declare
+		its own error-handler. Concrete gap this closes: order-outbox-publisher-
+		scheduler-flow's own db:select (fetching pending events) has no
+		error-handler wrapping it today - only the inner foreach/try does. If
+		that select fails, this is what catches it now, instead of an
+		unstructured, unlogged failure.
+	-->
+	<configuration defaultErrorHandler-ref="global-default-error-handler" />
+
+	<s3:config name="Amazon_S3_Configuration" doc:name="Amazon S3 Configuration" doc:id="cddc68e4-5caa-4233-9f20-67c5c2c8fb06">
+		<s3:connection accessKey="${secure::aws.accessKey}" secretKey="${secure::aws.secretKey}" region="${aws.region}" />
+	</s3:config>
+	<os:config name="ObjectStore_Config" doc:name="ObjectStore Config" doc:id="e87f6225-76f5-4eae-ad1c-7bcd834cbcf9" />
+	<global-property doc:name="Global Property" doc:id="02cb91f0-e2c4-4867-a621-7d0e6c27291a" name="env" value="dev" />
+	<!-- secure.key is supplied at runtime: -M-Dsecure.key=<your key>. Never commit it. -->
+	<global-property doc:name="Global Property" doc:id="7c1d3f2a-4e6b-4a9d-9c5e-8a2b6f0e1d34" name="http.port" value="8081" />
+	<secure-properties:config name="Secure_Properties_Config" doc:name="Secure Properties Config" doc:id="29e59e05-2326-4c5a-aac4-12745f5f301b" file="config/secure-${env}.yaml" key="${secure.key}" />
+	<configuration-properties doc:name="Configuration properties" doc:id="33142917-1510-46f4-8d57-4b276d2dc1cf" file="config/${env}.yaml" />
+	<db:config name="Database_Config" doc:name="Database Config" doc:id="95906d2f-6dad-4ebc-b99f-0455777e7c30">
+		<db:generic-connection url="jdbc:postgresql://${db.host}:${db.port}/${db.name}" driverClassName="org.postgresql.Driver" user="${db.user}" password="${secure::db.password}" />
+	</db:config>
+	<!--<api-gateway:autodiscovery
+        apiId="21119566"
+        flowRef="patterns-content-enricher-flow"
+        doc:name="Autodiscovery" />-->
+	<kafka:producer-config name="Apache_Kafka_Producer_configuration" doc:name="Apache Kafka Producer configuration" doc:id="aab70790-db53-4f17-a79b-e64ca45e857e" >
+		<kafka:producer-plaintext-connection >
+			<kafka:bootstrap-servers >
+				<kafka:bootstrap-server value="localhost:9092" />
+			</kafka:bootstrap-servers>
+		</kafka:producer-plaintext-connection>
+	</kafka:producer-config>
+	<kafka:consumer-config name="Apache_Kafka_Consumer_configuration" doc:name="Apache Kafka Consumer configuration" doc:id="3eb306d4-5f01-4cdf-a266-639e40a86617" >
+		<kafka:consumer-plaintext-connection groupId="order-notification-group" >
+			<kafka:bootstrap-servers >
+				<kafka:bootstrap-server value="localhost:9092" />
+			</kafka:bootstrap-servers>
+			<kafka:topic-patterns >
+				<kafka:topic-pattern value="order.events" />
+			</kafka:topic-patterns>
+		</kafka:consumer-plaintext-connection>
+	</kafka:consumer-config>
+
+	<!--
+		Two flat structured-logging sub-flows - no branching in either, since
+		"level" is the one <logger> attribute the XSD won't let be dynamic
+		(must be a literal INFO/ERROR/WARN/etc, confirmed the hard way).
+		Callers pick which sub-flow to flow-ref based on which situation
+		they're already in - success path calls log-event-subflow, error
+		handlers call log-error-event-subflow. Same vars contract either way:
+		  vars.logEvent   - event name, e.g. "ORDER_REQUEST_RECEIVED"
+		  vars.logContext - map of any extra fields this call site needs
+		  vars.logError   - (log-error-event-subflow only) the caught `error`
+	-->
+	<sub-flow name="log-event-subflow" doc:id="log-event-subflow-shared-001">
+		<logger level="INFO" doc:name="Structured Log (INFO)"
+			message='#[write({
+    timestamp: now(),
+    level: "INFO",
+    event: vars.logEvent,
+    correlationId: (vars.requestCorrelationId default correlationId)
+} ++ (vars.logContext default {}), "application/json")]' />
+	</sub-flow>
+
+	<sub-flow name="log-error-event-subflow" doc:id="log-error-event-subflow-shared-001">
+		<logger level="ERROR" doc:name="Structured Log (ERROR)"
+			message='#[write({
+    timestamp: now(),
+    level: "ERROR",
+    event: vars.logEvent,
+    correlationId: (vars.requestCorrelationId default correlationId),
+    errorType: (vars.logError.errorType as String) default null,
+    errorDescription: vars.logError.description default null,
+    errorDetailedDescription: vars.logError.detailedDescription default null
+} ++ (vars.logContext default {}), "application/json")]' />
+	</sub-flow>
+
+	<!--
+		Shared error-RESPONSE builder - same "one shared thing" pattern as the
+		two logging sub-flows above, applied to the actual HTTP body returned
+		to the client. Before this, 4+ error handlers each hand-built their own
+		{status, code, message, correlationId} shape independently, and 5 more
+		(the APIKIT NOT_FOUND/METHOD_NOT_ALLOWED/etc handlers) returned a
+		genuinely different, thinner shape with no status/code/correlationId
+		at all - found by checking, not assumed.
+
+		Caller sets vars.errorContext = {httpStatus, code, message} before
+		calling (already the existing convention every raise-error branch
+		uses) - this subflow reads it, sets vars.httpStatus, and builds the
+		one shared response shape. Only for HTTP-facing flows - the app-wide
+		global-default-error-handler below does NOT call this, since it also
+		covers non-HTTP flows (the scheduler) where a response body makes no
+		sense.
+	-->
+	<sub-flow name="build-error-response-subflow" doc:id="build-error-response-subflow-001">
+		<set-variable variableName="httpStatus" value="#[vars.errorContext.httpStatus default 500]" doc:name="Set httpStatus"/>
+		<ee:transform doc:name="Build error response">
+			<ee:message>
+				<ee:set-payload><![CDATA[%dw 2.0
+output application/json
+---
+{
+  status: "FAILED",
+  code: vars.errorContext.code default "SYSTEM_ERROR",
+  message: vars.errorContext.message default "An unexpected error occurred. Please try again later.",
+  correlationId: vars.requestCorrelationId default correlationId
+}]]></ee:set-payload>
+			</ee:message>
+		</ee:transform>
+	</sub-flow>
+
+	<!--
+		The actual handler that defaultErrorHandler-ref (above, near the top)
+		points to. This is the app-wide last-resort catch - applies only to a
+		flow that has NO error-handler of its own. Every flow that already
+		declares its own (order-experience-api-main, the POST /orders flow,
+		order-notification-consumerFlow, the transactional subflow) is
+		unaffected by this - their own handlers still run as before. This
+		exists specifically for the gap: order-outbox-publisher-scheduler-flow's
+		own db:select has no handler wrapping it today.
+	-->
+	<error-handler name="global-default-error-handler">
+		<on-error-propagate enableNotifications="true" logException="true" doc:name="Log and propagate unhandled error" type="ANY">
+			<set-variable variableName="logEvent" value="#['UNHANDLED_ERROR']" doc:name="logEvent"/>
+			<set-variable variableName="logError" value="#[error]" doc:name="logError"/>
+			<set-variable variableName="logContext" value="#[%dw 2.0
+output application/java
+---
+{}]" doc:name="logContext"/>
+			<flow-ref name="log-error-event-subflow" doc:name="Log UNHANDLED_ERROR"/>
+		</on-error-propagate>
+	</error-handler>
+</mule>

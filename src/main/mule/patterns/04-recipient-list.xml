@@ -1,0 +1,52 @@
+<mule xmlns="http://www.mulesoft.org/schema/mule/core" xmlns:doc="http://www.mulesoft.org/schema/mule/documentation" xmlns:ee="http://www.mulesoft.org/schema/mule/ee/core" xmlns:http="http://www.mulesoft.org/schema/mule/http" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://www.mulesoft.org/schema/mule/core http://www.mulesoft.org/schema/mule/core/current/mule.xsd  http://www.mulesoft.org/schema/mule/http http://www.mulesoft.org/schema/mule/http/current/mule-http.xsd  http://www.mulesoft.org/schema/mule/ee/core http://www.mulesoft.org/schema/mule/ee/core/current/mule-ee.xsd">
+  <http:request-config name="Generic_HTTP_Request_config">
+    <http:request-connection protocol="HTTPS"></http:request-connection>
+  </http:request-config>
+  <flow name="patterns-recipient-list-flow">
+    <http:listener config-ref="order-experience-api-httpListenerConfig" doc:id="kujqav" doc:name="Listener" path="/patterns/recipient-list"></http:listener>
+    <set-payload doc:id="gjezwn" doc:name="Set payload" value="#[%dw 2.0 output application/json --- { orderId: &quot;ORD-2001&quot;, category: &quot;ELECTRONICS&quot;, items: [{ sku: &quot;SKU-9&quot;, qty: 2 }] }]"></set-payload>
+    <set-variable doc:id="dqmfow" doc:name="Set variable" value="#[payload]" variableName="originalOrder"></set-variable>
+    <set-variable doc:id="yqtnoa" doc:name="Set variable" value='#[%dw 2.0
+output application/json
+---
+if (payload.category == "ELECTRONICS")
+  [
+    { name: "inventory-system", url: "https://httpbin.org/post" },
+    { name: "fraud-check", url: "https://httpbin.org/post" },
+    { name: "warehouse-east", url: "https://httpbin.org/status/500" }
+  ]
+else
+  [{ name: "inventory-system", url: "https://httpbin.org/post" }]
+]' variableName="recipients"></set-variable>
+    <parallel-foreach collection="#[vars.recipients]" doc:id="wxddyk" doc:name="Parallel foreach">
+      <set-variable doc:name="Set variable" doc:id="fqzzry" variableName="currentRecipientName" value="#[payload.name]"/>
+      <http:request doc:id="iqxlhk" doc:name="Request" config-ref="Generic_HTTP_Request_config" method="POST" url="#[payload.url]">
+        <http:body><![CDATA[#[vars.originalOrder]]]></http:body>
+      </http:request>
+      <logger doc:name="Logger" doc:id="hqqeqi" message='#[output application/java --- "Notified " ++ vars.currentRecipientName ++ " -&gt; " ++ (attributes.statusCode as String)]'/>
+    </parallel-foreach>
+    <ee:transform doc:id="yxaqhq" doc:name="Transform Message">
+      <ee:message>
+        <ee:set-payload doc:id="sfkqfp" doc:name="Set payload"><![CDATA[%dw 2.0
+output application/json
+---
+{ orderId: vars.originalOrder.orderId, recipientsNotified: vars.recipients, count: sizeOf(vars.recipients) }
+]]></ee:set-payload>
+      </ee:message>
+    </ee:transform>
+    <error-handler>
+      <on-error-continue type="MULE:COMPOSITE_ROUTING">
+                <ee:transform doc:name="Transform Message" doc:id="pcgnec" >
+                    <ee:message >
+                        <ee:set-payload doc:name="Set payload" doc:id="ghbftk" ><![CDATA[%dw 2.0
+output application/json
+---
+{ succeeded: error.errorMessage.payload.results, failed: error.errorMessage.payload.failures }
+]]></ee:set-payload>
+                    </ee:message>
+                </ee:transform>
+          
+      </on-error-continue>
+    </error-handler>
+  </flow>
+</mule>

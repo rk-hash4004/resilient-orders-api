@@ -1,0 +1,140 @@
+<!-- [DB OFF] Disabled 2026-10-05: moved out of src/main/mule so Mule does not load it (Postgres container not running, scheduler only logged connection errors). To re-enable: start order-experience-postgres, then move this file back to src/main/mule/order-outbox-publisher.xml. -->
+<?xml version="1.0" encoding="UTF-8"?>
+
+<mule xmlns:kafka="http://www.mulesoft.org/schema/mule/kafka" xmlns:db="http://www.mulesoft.org/schema/mule/db"
+	xmlns="http://www.mulesoft.org/schema/mule/core"
+	xmlns:doc="http://www.mulesoft.org/schema/mule/documentation" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://www.mulesoft.org/schema/mule/core http://www.mulesoft.org/schema/mule/core/current/mule.xsd
+http://www.mulesoft.org/schema/mule/db http://www.mulesoft.org/schema/mule/db/current/mule-db.xsd
+http://www.mulesoft.org/schema/mule/kafka http://www.mulesoft.org/schema/mule/kafka/current/mule-kafka.xsd">
+	<flow name="order-outbox-publisher-scheduler-flow" doc:id="9f8c59de-48a6-453d-b051-5fa20bcbaf42" >
+		<scheduler doc:name="Scheduler" doc:id="9241ab80-70b7-48a0-beab-ce3ac2ef3097" disallowConcurrentExecution="true" >
+			<scheduling-strategy >
+				<fixed-frequency timeUnit="SECONDS" frequency="15"/>
+			</scheduling-strategy>
+		</scheduler>
+
+		<set-variable variableName="logEvent" value="#['OUTBOX_SCHEDULER_STARTED']" doc:name="logEvent"/>
+		<set-variable variableName="logContext" value="#[%dw 2.0
+output application/java
+---
+{}]" doc:name="logContext"/>
+		<flow-ref name="log-event-subflow" doc:name="Log OUTBOX_SCHEDULER_STARTED"/>
+
+		<db:select doc:name="Select Pending Outbox Events" doc:id="5df9d9c3-881a-4a64-afac-5b902529b810" config-ref="Database_Config" target="pendingOutboxEvents">
+			<db:sql ><![CDATA[SELECT
+    event_id,
+    event_type,
+    event_version,
+    aggregate_type,
+    aggregate_id,
+    event_payload::text AS event_payload,
+    event_status,
+    retry_count,
+    correlation_id
+FROM order_outbox
+WHERE event_status = 'PENDING'
+  AND retry_count < 5
+ORDER BY created_at, event_id
+LIMIT 10]]></db:sql>
+		</db:select>
+
+		<set-variable variableName="logEvent" value="#['OUTBOX_EVENTS_FETCHED']" doc:name="logEvent"/>
+		<set-variable variableName="logContext" value="#[%dw 2.0
+output application/java
+---
+{count: sizeOf(vars.pendingOutboxEvents default [])}]" doc:name="logContext"/>
+		<flow-ref name="log-event-subflow" doc:name="Log OUTBOX_EVENTS_FETCHED"/>
+
+		<foreach doc:name="For Each" doc:id="06fbce1a-c5b2-4854-9f3d-465c835e56e5" collection="#[vars.pendingOutboxEvents default []]">
+			<set-variable value="#[payload]" doc:name="Set Variable" doc:id="b1c44d62-57ac-491a-a317-7bcc6f4fc7d2" variableName="currentOutboxEvent"/>
+			<!-- This flow processes events for many different orders in one run -
+			     use THIS event's own original correlation_id (from the order that
+			     created it), not the scheduler trigger's own fresh one, so these
+			     log lines trace back to the right order. -->
+			<set-variable variableName="requestCorrelationId" value="#[vars.currentOutboxEvent.correlation_id]" doc:name="Use event's own correlationId"/>
+			<try doc:name="Try" doc:id="f2f48127-2047-4720-b15e-59a87fb0dff4" >
+				<set-variable variableName="logEvent" value="#['OUTBOX_EVENT_PUBLISHING']" doc:name="logEvent"/>
+				<set-variable variableName="logContext" doc:name="logContext" value='#[%dw 2.0
+output application/java
+---
+{
+    eventId: vars.currentOutboxEvent.event_id,
+    eventType: vars.currentOutboxEvent.event_type,
+    aggregateId: vars.currentOutboxEvent.aggregate_id,
+    eventPayload: read(vars.currentOutboxEvent.event_payload, "application/json")
+}]'/>
+				<flow-ref name="log-event-subflow" doc:name="Log OUTBOX_EVENT_PUBLISHING"/>
+
+				<kafka:publish doc:name="Publish" doc:id="de01dad2-0c69-48dd-ae7e-b68385d18e19" config-ref="Apache_Kafka_Producer_configuration" topic="order.events" key="#[vars.currentOutboxEvent.aggregate_id]">
+					<kafka:message ><![CDATA[#[vars.currentOutboxEvent.event_payload]]]></kafka:message>
+          <kafka:headers><![CDATA[#[{'x-correlation-id': vars.currentOutboxEvent.correlation_id}]]]></kafka:headers>      
+				</kafka:publish>
+				<db:update doc:name="Mark Event Published" doc:id="04dae7ef-4780-4b55-8d91-e34dc04bc52f" config-ref="Database_Config" target="publishedUpdateResult">
+					<db:sql ><![CDATA[UPDATE order_outbox
+SET
+    event_status = 'PUBLISHED',
+    processed_at = CURRENT_TIMESTAMP,
+    last_error = NULL
+WHERE event_id = :eventId
+  AND event_status = 'PENDING']]></db:sql>
+					<db:input-parameters ><![CDATA[#[%dw 2.0
+output application/java
+---
+{
+  eventId: vars.currentOutboxEvent.event_id
+}]]]></db:input-parameters>
+				</db:update>
+				<choice doc:name="Choice" doc:id="75d096db-bc62-4f5b-9c55-cf8577705adc" >
+					<when expression="#[(vars.publishedUpdateResult.affectedRows default 0) == 1]">
+						<set-variable variableName="logEvent" value="#['OUTBOX_EVENT_PUBLISHED']" doc:name="logEvent"/>
+						<set-variable variableName="logContext" value="#[%dw 2.0
+output application/java
+---
+{
+    eventId: vars.currentOutboxEvent.event_id,
+    aggregateId: vars.currentOutboxEvent.aggregate_id
+}]" doc:name="logContext"/>
+						<flow-ref name="log-event-subflow" doc:name="Log OUTBOX_EVENT_PUBLISHED"/>
+					</when>
+					<otherwise >
+						<raise-error doc:name="Raise error" doc:id="59b9be54-f86a-4c6f-a1bb-afbfcdba205e" type="OUTBOX:STATUS_UPDATE_FAILED" description="No pending outbox row was updated"/>
+					</otherwise>
+				</choice>
+				<error-handler >
+					<on-error-continue enableNotifications="true" logException="true" doc:name="Handle Outbox Event Failure" doc:id="37327624-0147-4c7b-86bd-eff19cb446eb" type="ANY">
+						<set-variable variableName="logEvent" value="#['OUTBOX_EVENT_PUBLISH_FAILED']" doc:name="logEvent"/>
+						<set-variable variableName="logError" value="#[error]" doc:name="logError"/>
+						<set-variable variableName="logContext" value="#[%dw 2.0
+output application/java
+---
+{
+    eventId: vars.currentOutboxEvent.event_id default null,
+    aggregateId: vars.currentOutboxEvent.aggregate_id default null
+}]" doc:name="logContext"/>
+						<flow-ref name="log-error-event-subflow" doc:name="Log OUTBOX_EVENT_PUBLISH_FAILED"/>
+						<db:update doc:name="Update Outbox Retry" doc:id="acc332d6-5ada-4c7d-a906-d20ef033b367" config-ref="Database_Config" target="retryUpdateResult" >
+							<db:sql ><![CDATA[UPDATE order_outbox
+SET
+    retry_count = retry_count + 1,
+    event_status =
+        CASE
+            WHEN retry_count + 1 >= 5 THEN 'FAILED'
+            ELSE 'PENDING'
+        END,
+    last_error = :lastError
+WHERE event_id = :eventId]]></db:sql>
+							<db:input-parameters ><![CDATA[#[%dw 2.0
+output application/java
+---
+{
+    eventId: vars.currentOutboxEvent.event_id,
+    lastError:
+        (error.description default "Outbox event processing failed")
+}]]]></db:input-parameters>
+						</db:update>
+					</on-error-continue>
+				</error-handler>
+			</try>
+		</foreach>
+	</flow>
+</mule>

@@ -1,0 +1,120 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<mule xmlns="http://www.mulesoft.org/schema/mule/core" xmlns:doc="http://www.mulesoft.org/schema/mule/documentation" xmlns:ee="http://www.mulesoft.org/schema/mule/ee/core" xmlns:http="http://www.mulesoft.org/schema/mule/http" xmlns:os="http://www.mulesoft.org/schema/mule/os" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://www.mulesoft.org/schema/mule/core http://www.mulesoft.org/schema/mule/core/current/mule.xsd http://www.mulesoft.org/schema/mule/ee/core http://www.mulesoft.org/schema/mule/ee/core/current/mule-ee.xsd http://www.mulesoft.org/schema/mule/http http://www.mulesoft.org/schema/mule/http/current/mule-http.xsd http://www.mulesoft.org/schema/mule/os http://www.mulesoft.org/schema/mule/os/current/mule-os.xsd">
+	<!--
+		CIRCUIT BREAKER. One call per request (no retry loop), so the breaker is easy to see.
+		State is kept in the Object Store key "cb-state" so it is shared by ALL requests:
+		  { failures: <count in a row>, openedAt: <time it opened, or null when closed> }
+		CLOSED    openedAt = null                        -> call inventory normally
+		OPEN      openedAt set and openMs not passed     -> do NOT call, fail fast
+		HALF-OPEN openedAt set and openMs passed         -> allow ONE trial call; success closes it, failure opens it again
+		Rule: failureThreshold failures in a row open the circuit for openMs.
+		GET /self-healing/breaker              the protected call
+		GET /self-healing/breaker/reset        clear the state (for testing)
+	-->
+	<flow name="self-healing-breaker-flow">
+		<http:listener config-ref="order-experience-api-httpListenerConfig" path="/self-healing/breaker">
+			<http:response statusCode="#[vars.httpStatus default 200]" />
+		</http:listener>
+		<ee:transform doc:name="Settings">
+			<ee:variables>
+				<ee:set-variable variableName="idemKey"><![CDATA[uuid()]]></ee:set-variable>
+				<ee:set-variable variableName="sku"><![CDATA[attributes.queryParams.sku default 'TILE-1']]></ee:set-variable>
+				<ee:set-variable variableName="failureThreshold"><![CDATA[3]]></ee:set-variable>
+				<ee:set-variable variableName="openMs"><![CDATA[10000]]></ee:set-variable>
+				<ee:set-variable variableName="nowMs"><![CDATA[now() as Number {unit: "milliseconds"}]]></ee:set-variable>
+			</ee:variables>
+		</ee:transform>
+		<!-- 1. Read the shared breaker state (first time: closed, 0 failures) -->
+		<os:retrieve key="cb-state" objectStore="SelfHealing_Store" target="cb">
+			<os:default-value>#[{ failures: 0, openedAt: null }]</os:default-value>
+		</os:retrieve>
+		<choice>
+			<!-- 2a. OPEN: still inside the open window -> fail fast, do not call inventory -->
+			<when expression="#[vars.cb.openedAt != null and (vars.nowMs - vars.cb.openedAt) &lt; vars.openMs]">
+				<logger level="WARN" message="#['circuit OPEN, failing fast (opened ' ++ (vars.nowMs - vars.cb.openedAt) ++ ' ms ago, stays open ' ++ vars.openMs ++ ' ms)']" />
+				<ee:transform doc:name="Circuit open response">
+					<ee:message>
+						<ee:set-payload><![CDATA[%dw 2.0
+output application/json
+---
+{
+  outcome: "CIRCUIT_OPEN",
+  message: "Inventory is failing, not calling it for now",
+  retryAfterMs: vars.openMs - (vars.nowMs - vars.cb.openedAt)
+}]]></ee:set-payload>
+					</ee:message>
+					<ee:variables>
+						<ee:set-variable variableName="httpStatus"><![CDATA[503]]></ee:set-variable>
+					</ee:variables>
+				</ee:transform>
+			</when>
+			<!-- 2b. CLOSED, or HALF-OPEN (openedAt set but the window has passed): make the call -->
+			<otherwise>
+				<logger level="INFO" message="#[if (vars.cb.openedAt != null) 'circuit HALF-OPEN, trial call' else 'circuit CLOSED, normal call']" />
+				<try>
+					<flow-ref name="self-healing-call-inventory" />
+					<!-- Success: close the circuit and reset the count -->
+					<os:store key="cb-state" objectStore="SelfHealing_Store">
+						<os:value>#[{ failures: 0, openedAt: null }]</os:value>
+					</os:store>
+					<ee:transform doc:name="Success response">
+						<ee:message>
+							<ee:set-payload><![CDATA[%dw 2.0
+output application/json
+---
+{
+  outcome: "SUCCESS",
+  circuit: "CLOSED",
+  idempotencyKey: vars.idemKey,
+  downstream: payload
+}]]></ee:set-payload>
+						</ee:message>
+					</ee:transform>
+					<error-handler>
+						<!-- Temporary failure: count it. Open the circuit at the threshold, or straight away if this was the half-open trial. -->
+						<on-error-continue type="HTTP:SERVICE_UNAVAILABLE, HTTP:TIMEOUT, HTTP:CONNECTIVITY, HTTP:INTERNAL_SERVER_ERROR, HTTP:TOO_MANY_REQUESTS">
+							<ee:transform doc:name="Count failure">
+								<ee:variables>
+									<ee:set-variable variableName="newState"><![CDATA[do {
+  var failures = vars.cb.failures + 1
+  var opens = failures >= vars.failureThreshold or vars.cb.openedAt != null
+  ---
+  { failures: failures, openedAt: if (opens) vars.nowMs else null }
+}]]></ee:set-variable>
+								</ee:variables>
+							</ee:transform>
+							<os:store key="cb-state" objectStore="SelfHealing_Store">
+								<os:value>#[vars.newState]</os:value>
+							</os:store>
+							<logger level="WARN" message="#['call failed, failures in a row: ' ++ vars.newState.failures ++ ', circuit ' ++ (if (vars.newState.openedAt != null) 'now OPEN' else 'still CLOSED')]" />
+							<ee:transform doc:name="Call failed response">
+								<ee:message>
+									<ee:set-payload><![CDATA[%dw 2.0
+output application/json
+---
+{
+  outcome: "CALL_FAILED",
+  circuit: if (vars.newState.openedAt != null) "OPEN" else "CLOSED",
+  failuresInARow: vars.newState.failures,
+  idempotencyKey: vars.idemKey
+}]]></ee:set-payload>
+								</ee:message>
+								<ee:variables>
+									<ee:set-variable variableName="httpStatus"><![CDATA[503]]></ee:set-variable>
+								</ee:variables>
+							</ee:transform>
+						</on-error-continue>
+					</error-handler>
+				</try>
+			</otherwise>
+		</choice>
+	</flow>
+
+	<flow name="self-healing-breaker-reset">
+		<http:listener config-ref="order-experience-api-httpListenerConfig" path="/self-healing/breaker/reset" allowedMethods="GET" />
+		<os:store key="cb-state" objectStore="SelfHealing_Store">
+			<os:value>#[{ failures: 0, openedAt: null }]</os:value>
+		</os:store>
+		<set-payload value='#[output application/json --- { circuit: "CLOSED", failures: 0 }]' />
+	</flow>
+</mule>

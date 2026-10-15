@@ -1,0 +1,69 @@
+<mule xmlns="http://www.mulesoft.org/schema/mule/core" xmlns:aggregators="http://www.mulesoft.org/schema/mule/aggregators" xmlns:doc="http://www.mulesoft.org/schema/mule/documentation" xmlns:ee="http://www.mulesoft.org/schema/mule/ee/core" xmlns:http="http://www.mulesoft.org/schema/mule/http" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://www.mulesoft.org/schema/mule/core http://www.mulesoft.org/schema/mule/core/current/mule.xsd  http://www.mulesoft.org/schema/mule/http http://www.mulesoft.org/schema/mule/http/current/mule-http.xsd  http://www.mulesoft.org/schema/mule/aggregators http://www.mulesoft.org/schema/mule/aggregators/current/mule-aggregators.xsd  http://www.mulesoft.org/schema/mule/ee/core http://www.mulesoft.org/schema/mule/ee/core/current/mule-ee.xsd">
+    <flow name="patterns-aggregator-flow">
+        <http:listener config-ref="order-experience-api-httpListenerConfig" doc:id="uusstp" doc:name="Listener" path="/patterns/aggregator"></http:listener>
+        <aggregators:group-based-aggregator doc:name="Group-based-aggregator" evictionTime="30" groupId="#[payload.orderId]" groupSize="3" name="orderLineAggregator" timeout="15">
+            <aggregators:incremental-aggregation>
+                <logger doc:id="jqruol" doc:name="Logger" message="#[output application/java --- &quot;Incremental - &quot; ++ (sizeOf(payload) as String) ++ &quot; element(s) so far&quot;]"></logger>
+                <set-variable doc:id="ynsbid" doc:name="Set variable" value="#[%dw 2.0 output application/json --- { status: &quot;incremental&quot;, orderId: payload[-1].orderId, sku: payload[-1].sku, elementsSoFar: sizeOf(payload) }]" variableName="aggResult"></set-variable>
+            </aggregators:incremental-aggregation>
+            <aggregators:aggregation-complete>
+                <logger doc:id="rlntfg" doc:name="Logger" message="#[output application/java --- &quot;Complete - &quot; ++ (sizeOf(payload) as String) ++ &quot; element(s), totalQty=&quot; ++ (sum(payload map $.qty) as String)]"></logger>
+                <set-variable doc:id="xvncsl" doc:name="Set variable" value="#[%dw 2.0 output application/json --- { status: &quot;complete&quot;, orderId: payload[0].orderId, lines: payload, totalQty: sum(payload map $.qty) }]" variableName="aggResult"></set-variable>
+            </aggregators:aggregation-complete>
+        </aggregators:group-based-aggregator>
+        <ee:transform doc:id="qavcwm" doc:name="Transform Message">
+            <ee:message>
+                <ee:set-payload doc:id="dduhdq" doc:name="Set payload"><![CDATA[%dw 2.0
+output application/json
+---
+vars.aggResult]]></ee:set-payload>
+            </ee:message>
+        </ee:transform>
+    </flow>
+    <flow name="patterns-aggregator-listener-flow">
+        <aggregators:aggregator-listener aggregatorName="orderLineAggregator" doc:id="dgnaoh" doc:name="Aggregator listener" includeTimedOutGroups="true"></aggregators:aggregator-listener>
+        <logger doc:id="peekcv" doc:name="Logger" message="#[output application/java --- &quot;Listener fired for order &quot; ++ (payload[0].orderId) ++ &quot; - complete=&quot; ++ (attributes.isAggregationComplete as String) ++ &quot;, elements=&quot; ++ (sizeOf(payload) as String)]"></logger>
+    </flow>
+    <flow name="patterns-size-based-aggregator-flow">
+        <http:listener config-ref="order-experience-api-httpListenerConfig" doc:id="zktmgb" doc:name="Listener" path="/patterns/size-aggregator"></http:listener>
+        <aggregators:size-based-aggregator doc:name="Size-based-aggregator" maxSize="3" name="lineItemSizeAggregator">
+            <aggregators:incremental-aggregation>
+                <logger doc:id="mdwxuc" doc:name="Logger" message="#[output application/java --- &quot;Size-based incremental - &quot; ++ (sizeOf(payload) as String) ++ &quot; element(s) so far&quot;]"></logger>
+                <set-variable doc:id="ctiyid" doc:name="Set variable" value="#[%dw 2.0 output application/json --- { status: &quot;incremental&quot;, elementsSoFar: sizeOf(payload) }]" variableName="aggResult"></set-variable>
+            </aggregators:incremental-aggregation>
+            <aggregators:aggregation-complete>
+                <logger doc:id="fzzsgg" doc:name="Logger" message="#[output application/java --- &quot;Size-based COMPLETE - &quot; ++ (sizeOf(payload) as String) ++ &quot; element(s)&quot;]"></logger>
+                <set-variable doc:id="inbull" doc:name="Set variable" value="#[%dw 2.0 output application/json --- { status: &quot;complete&quot;, batch: payload, count: sizeOf(payload) }]" variableName="aggResult"></set-variable>
+            </aggregators:aggregation-complete>
+        </aggregators:size-based-aggregator>
+        <ee:transform doc:id="xufepk" doc:name="Transform Message">
+            <ee:message>
+                <ee:set-payload doc:id="lhcyit" doc:name="Set payload"><![CDATA[%dw 2.0
+output application/json
+---
+vars.aggResult]]></ee:set-payload>
+            </ee:message>
+        </ee:transform>
+    </flow>
+    <flow name="patterns-time-based-aggregator-flow">
+        <http:listener config-ref="order-experience-api-httpListenerConfig" doc:id="fmcmxr" doc:name="Listener" path="/patterns/time-aggregator"></http:listener>
+        <aggregators:time-based-aggregator doc:name="Time-based-aggregator" name="lineItemTimeAggregator" period="10">
+            <aggregators:incremental-aggregation>
+                <logger doc:id="gtujiy" doc:name="Logger" message="#[output application/java --- &quot;Time-based received - &quot; ++ (sizeOf(payload) as String) ++ &quot; element(s) buffered so far&quot;]"></logger>
+                <set-variable doc:id="aqigzz" doc:name="Set variable" value="#[%dw 2.0 output application/json --- { status: &quot;queued&quot;, elementsBuffered: sizeOf(payload) }]" variableName="aggResult"></set-variable>
+            </aggregators:incremental-aggregation>
+        </aggregators:time-based-aggregator>
+        <ee:transform doc:id="ntljao" doc:name="Transform Message">
+            <ee:message>
+                <ee:set-payload doc:id="swmypk" doc:name="Set payload"><![CDATA[%dw 2.0
+output application/json
+---
+vars.aggResult]]></ee:set-payload>
+            </ee:message>
+        </ee:transform>
+    </flow>
+    <flow name="patterns-time-based-aggregator-listener-flow">
+        <aggregators:aggregator-listener doc:name="Aggregator listener" doc:id="xyzjxt" aggregatorName="lineItemTimeAggregator"/>
+        <logger doc:name="Logger" doc:id="kuwyvb" message='#[output application/java --- "Time-based release! " ++ (sizeOf(payload) as String) ++ " element(s), complete=" ++ (attributes.isAggregationComplete as String)]'/>
+    </flow>
+</mule>

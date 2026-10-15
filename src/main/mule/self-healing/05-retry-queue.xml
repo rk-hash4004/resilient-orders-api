@@ -1,0 +1,120 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<mule xmlns="http://www.mulesoft.org/schema/mule/core" xmlns:ee="http://www.mulesoft.org/schema/mule/ee/core" xmlns:http="http://www.mulesoft.org/schema/mule/http" xmlns:os="http://www.mulesoft.org/schema/mule/os" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://www.mulesoft.org/schema/mule/core http://www.mulesoft.org/schema/mule/core/current/mule.xsd http://www.mulesoft.org/schema/mule/ee/core http://www.mulesoft.org/schema/mule/ee/core/current/mule-ee.xsd http://www.mulesoft.org/schema/mule/http http://www.mulesoft.org/schema/mule/http/current/mule-http.xsd http://www.mulesoft.org/schema/mule/os http://www.mulesoft.org/schema/mule/os/current/mule-os.xsd">
+	<!--
+		Option C: retry queue. A failed call becomes a TASK with attempts, status, nextAttemptAt, lastError and history.
+		A scheduler picks due tasks. Retryable failure -> push nextAttemptAt out (exponential backoff + jitter).
+		Permanent failure -> DEAD at once. After 5 attempts -> DEAD (the dead-letter state).
+		No thread ever sleeps. Tasks live in the Object Store here; in production this is a database table.
+	-->
+	<flow name="self-healing-queue-submit-flow">
+		<http:listener config-ref="order-experience-api-httpListenerConfig" path="/self-healing/queue/submit" />
+		<set-variable variableName="taskId" value="#[uuid()]" />
+		<set-variable variableName="sku" value="#[attributes.queryParams.sku default 'TILE-1']" />
+		<ee:transform>
+			<ee:message>
+				<ee:set-payload><![CDATA[%dw 2.0
+output application/java
+---
+{
+  id: vars.taskId,
+  sku: vars.sku,
+  idemKey: uuid(),
+  attempts: 0,
+  status: "PENDING",
+  nextAttemptAt: now() as Number {unit: "milliseconds"},
+  lastError: null,
+  history: []
+}]]></ee:set-payload>
+			</ee:message>
+		</ee:transform>
+		<os:store key="#['task-' ++ vars.taskId]" objectStore="SelfHealing_Store">
+			<os:value>#[payload]</os:value>
+		</os:store>
+		<set-payload value='#[output application/json --- { id: vars.taskId, status: "PENDING", note: "poll /self-healing/queue/status?id=" ++ vars.taskId }]' />
+	</flow>
+
+	<flow name="self-healing-queue-status-flow">
+		<http:listener config-ref="order-experience-api-httpListenerConfig" path="/self-healing/queue/status" />
+		<os:retrieve key="#['task-' ++ attributes.queryParams.id]" objectStore="SelfHealing_Store" target="task" />
+		<set-payload value='#[output application/json --- vars.task]' />
+	</flow>
+
+	<flow name="self-healing-queue-worker-flow">
+		<scheduler disallowConcurrentExecution="true">
+			<scheduling-strategy>
+				<fixed-frequency frequency="1" timeUnit="SECONDS" />
+			</scheduling-strategy>
+		</scheduler>
+		<os:retrieve-all-keys objectStore="SelfHealing_Store" />
+		<foreach collection='#[payload filter ((k) -> k startsWith "task-")]'>
+			<set-variable variableName="taskKey" value="#[payload]" />
+			<flow-ref name="self-healing-queue-process-task" />
+		</foreach>
+	</flow>
+
+	<flow name="self-healing-queue-process-task">
+		<os:retrieve key="#[vars.taskKey]" objectStore="SelfHealing_Store" target="task" />
+		<choice>
+			<when expression="#[vars.task.status == 'PENDING' and vars.task.nextAttemptAt &lt;= (now() as Number {unit: 'milliseconds'})]">
+				<set-variable variableName="sku" value="#[vars.task.sku]" />
+				<set-variable variableName="idemKey" value="#[vars.task.idemKey]" />
+				<try>
+					<flow-ref name="self-healing-call-inventory" />
+					<ee:transform>
+						<ee:variables>
+							<ee:set-variable variableName="newTask"><![CDATA[%dw 2.0
+output application/java
+---
+vars.task ++ {
+  attempts: vars.task.attempts + 1,
+  status: "DONE",
+  lastError: null,
+  result: payload,
+  history: vars.task.history ++ [{ attempt: vars.task.attempts + 1, result: "OK" }]
+}]]></ee:set-variable>
+						</ee:variables>
+					</ee:transform>
+					<error-handler>
+						<on-error-continue type="HTTP:SERVICE_UNAVAILABLE, HTTP:TIMEOUT, HTTP:CONNECTIVITY, HTTP:INTERNAL_SERVER_ERROR, HTTP:TOO_MANY_REQUESTS">
+							<ee:transform>
+								<ee:variables>
+									<ee:set-variable variableName="newTask"><![CDATA[%dw 2.0
+output application/java
+var a = vars.task.attempts
+var waitMs = (1000 * (2 pow a)) + randomInt(501)
+---
+vars.task ++ {
+  attempts: a + 1,
+  status: if (a + 1 >= 5) "DEAD" else "PENDING",
+  lastError: error.description,
+  nextAttemptAt: (now() as Number {unit: "milliseconds"}) + waitMs,
+  history: vars.task.history ++ [{ attempt: a + 1, result: error.errorType.identifier, nextTryInMs: if (a + 1 >= 5) null else waitMs }]
+}]]></ee:set-variable>
+								</ee:variables>
+							</ee:transform>
+						</on-error-continue>
+						<on-error-continue type="HTTP:BAD_REQUEST, HTTP:NOT_FOUND, HTTP:UNAUTHORIZED, HTTP:FORBIDDEN">
+							<ee:transform>
+								<ee:variables>
+									<ee:set-variable variableName="newTask"><![CDATA[%dw 2.0
+output application/java
+---
+vars.task ++ {
+  attempts: vars.task.attempts + 1,
+  status: "DEAD",
+  lastError: error.description,
+  history: vars.task.history ++ [{ attempt: vars.task.attempts + 1, result: error.errorType.identifier, note: "permanent error, not retried" }]
+}]]></ee:set-variable>
+								</ee:variables>
+							</ee:transform>
+						</on-error-continue>
+					</error-handler>
+				</try>
+				<os:store key="#[vars.taskKey]" objectStore="SelfHealing_Store">
+					<os:value>#[vars.newTask]</os:value>
+				</os:store>
+				<logger level="INFO" message="#['task ' ++ vars.task.id ++ ' -> ' ++ vars.newTask.status ++ ' (attempts ' ++ (vars.newTask.attempts as String) ++ ')']" />
+			</when>
+		</choice>
+	</flow>
+</mule>

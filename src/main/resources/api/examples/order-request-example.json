@@ -1,0 +1,79 @@
+{
+  "externalOrderId": "ORD-TEST-1001",
+  "orderSource": "WEB",
+  "marketplace": "US",
+  "requestTime": "2026-04-07T10:15:30Z",
+  "customer": {
+    "customerId": "CUST-1001",
+    "customerType": "REGISTERED",
+    "email": "john@example.com",
+    "firstName": "John",
+    "lastName": "Doe",
+    "phone": "+1-214-555-0101"
+  },
+  "items": [
+    {
+      "lineNumber": 1,
+      "sellerId": "SELLER-100",
+      "productId": "SKU-101",
+      "sku": "SKU-101-BLK-9",
+      "productName": "Running Shoes",
+      "quantity": 2,
+      "unitPrice": 25.50,
+      "listPrice": 30.00,
+      "itemDiscount": 4.50,
+      "taxAmount": 3.20,
+      "currency": "USD",
+      "fulfillmentType": "SHIP"
+    }
+  ],
+  "pricing": {
+    "subtotal": 51.00,
+    "itemDiscountTotal": 4.50,
+    "shippingAmount": 4.99,
+    "taxAmount": 3.20,
+    "orderDiscountTotal": 2.00,
+    "grandTotal": 52.69,
+    "currency": "USD"
+  },
+  "shippingAddress": {
+    "name": "John Doe",
+    "addressLine1": "120 Main St",
+    "addressLine2": "Apt 4B",
+    "city": "Dallas",
+    "state": "TX",
+    "postalCode": "75001",
+    "country": "US"
+  },
+  "billingAddress": {
+    "name": "John Doe",
+    "addressLine1": "120 Main St",
+    "addressLine2": "Apt 4B",
+    "city": "Dallas",
+    "state": "TX",
+    "postalCode": "75001",
+    "country": "US"
+  },
+  "delivery": {
+    "deliveryOption": "STANDARD",
+    "deliveryInstructions": "Leave at front door"
+  },
+  "payment": {
+    "paymentMethodType": "CARD",
+    "paymentToken": "tok_abc123xyz",
+    "paymentProvider": "STRIPE",
+    "authorizedAmount": 52.69,
+    "currency": "USD"
+  },
+  "promotions": [
+    {
+      "code": "SPRING10",
+      "type": "ORDER",
+      "amount": 2.00
+    }
+  ],
+  "orderAttributes": {
+    "gift": false,
+    "customerNotes": "Call if needed"
+  }
+}
